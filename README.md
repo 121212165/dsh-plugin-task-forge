@@ -74,6 +74,7 @@ STATUS: READY 或 STATUS: NEED-INPUT
 | dsh-plugin-prompt-vault（自家） | `ctx.agents.followup()` 注入通道、v4 producer-owned source kind | vault 降级为非依赖；编译指令按 auto/interview 双模式生成 | —— |
 | kaanozhan/Frame（394★） | spec 四件套、编号化决策 | 四件套收敛为单文件任务书，加版本号与握手 | 回读握手协议 |
 | distilly（25k★） | "思维→结构化产物"的大方向 | 它蒸馏成 Skill，我们编译成任务书+握手，面向跨工具交接 | 无损传递的判定机制 |
+| dsh-auto-review（222★，PerryLink） | 装配层测试方法论：mock ctx harness + 把命令 handler 当真函数调，补上"纯函数层测试好、装配层零覆盖"的断层（其五层模型的第 1-3 层） | 它用 vitest fork pool，我们按家族标准用 node:test + 真临时目录；其第 4-5 层（真实 Loader 子进程组装）暂未引入 | —— |
 
 ## 测试
 
@@ -81,7 +82,10 @@ STATUS: READY 或 STATUS: NEED-INPUT
 npm run check   # typecheck + node --test + tsc build
 ```
 
-26 个测试覆盖纯函数层：任务书校验/版本推进/缺口应答、握手解析（中文冒号/旧版本/结构残缺/空缺口）、台账解析/折叠/注入预算。
+47 个测试，两层：
+
+- **纯函数层（30）**：任务书校验/版本推进/缺口应答、握手解析（中文冒号/旧版本/结构残缺/空缺口/自作主张的 READY 降级）、台账解析/折叠/注入预算；
+- **装配层（17，`test/harness.ts` + `test/plugin.test.ts`）**：真实 `apply()` 挂到脚本化 mock ctx 上（命令/工具/注入全部捕获，followup 走假会话），在真临时目录里驱动完整协议流——`/forge` 落盘并注入编译指令（含 headless 粘贴回退）、`forge_write` 校验拒绝与 interview 轮、`/relay` 导出交接包、`/ack` 垃圾输入拒绝/READY 放行/降级/旧版本拦截、`/answer` 版本推进、`/forge-done` 从注入摘除、坏配置启动点名。全家第一个有装配层覆盖的插件，harness 可直接复制给其他 17 个。
 
 ## v0.2 路线（按使用频率决定）
 
