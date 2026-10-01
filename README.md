@@ -1,5 +1,7 @@
 # dsh-plugin-task-forge
 
+**EN** · Compiles a rough need into a versioned task book, then hands it to any other AI window through a **read-back handshake**: `/forge` compiles, `/relay` emits, `/ack` proves the receiver got it byte-for-byte, `/answer` returns — aimed at the lossy copy-paste handoff between agents. · 26 `node --test` green · design notes in `TASK-FORGE-DESIGN.md`.
+
 dsh 插件：**先把大白话编译成任务书，再无损交接给任意窗口的 AI**。
 
 普通人和 AI 协作的真实瓶颈不是"不会写提示词"，而是缺一道**编译工序**：你脑子里只有一个模糊需求，直接丢给干活的 AI，它理解歪了你也不知道；换了窗口、换了 IDE，上下文全靠人肉搬运。task-forge 把这件事产品化：
@@ -11,10 +13,21 @@ dsh 插件：**先把大白话编译成任务书，再无损交接给任意窗�
 
 ## 安装
 
-```bash
-dsh plugin --profile <你的profile> add <本仓库克隆路径>
+三步，实测于 `@deepseek-ai/dsh@0.1.7-alpha.1`（需 `pnpm` 在 PATH 上）：
+
+```sh
+# ① 装进 profile：dsh plugin 把参数原样转发给 pnpm，git 包会自动跑 prepare 构建 lib/
+dsh plugin --profile web add github:121212165/dsh-plugin-task-forge
 ```
 
+② 把本仓库根目录 `cordis.patch.yml` 的内容**并进** `$DSH_HOME/profiles/web/cordis.patch.yml`。
+该文件默认是 `[]`，所以要么整份替换，要么把 insert 条目并进同一个数组；**不要直接追加**——
+追加会形成两个 YAML 文档，启动即报
+`failed to parse overlay ... end of the stream or a document separator is expected`（本机实测踩过）。
+
+③ 重启 dsh。配置层与 client 半都要重启才生效（客户端按 boot 时算出的内容 rev 下发，硬刷新浏览器没用）。
+
+自检挂载：`dsh --profile web --dump-config | grep dsh-plugin-task-forge`，应看到该条目。
 ## 命令
 
 | 命令 | 作用 |
