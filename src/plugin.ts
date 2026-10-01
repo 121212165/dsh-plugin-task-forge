@@ -134,8 +134,12 @@ export function apply(ctx: Context, config: Config): void {
       agent.followup(
         createUserMessage({
           content: [{ type: 'text', text: instruction }],
-          // format v4: producer-owned kind (the old catch-all 'plugin' is gone)
-          source: { kind: name, form: 'notice', summary: `任务编译 ${task.id}` } as unknown as Parameters<typeof createUserMessage>[0]['source'],
+          // format v4 retired the catch-all 'plugin' kind; third-party producers
+          // namespace theirs as `plugin:<name>`, which is what the official v3->v4
+          // producerKind() migrates legacy wrappers to. A bare `task-forge` would
+          // load fine but sits in the namespace v4 reserves for first-party
+          // producers (runtime-context, compact-checkpoint, agent-instructions).
+          source: { kind: `plugin:${name}`, form: 'notice', summary: `任务编译 ${task.id}` } as unknown as Parameters<typeof createUserMessage>[0]['source'],
         }),
       );
       return `已把编译指令注入当前会话，模型编译后会经 forge_write 落盘。任务 id: ${task.id}（/relay ${task.id} 导出交接包）。`;
