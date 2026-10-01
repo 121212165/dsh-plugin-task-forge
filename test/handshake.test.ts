@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseHandshake, isStaleVersion, renderAckReply } from '../src/handshake.ts';
+import { parseHandshake, isStaleVersion, needsSenderInput, renderAckReply } from '../src/handshake.ts';
 import { type TaskBook } from '../src/taskbook.ts';
 
 const task: TaskBook = {
@@ -54,6 +54,29 @@ test('parseHandshake accepts Chinese colons and dashes, and keeps unnumbered gap
   assert.deepEqual(hs.gaps, ['高度单位', '无编号的一条也该被收进缺口']);
 });
 
+test('severity tags the receiver brackets inside gap items do not truncate the list', () => {
+  const hs = parseHandshake([
+    'version: 13',
+    '【回读】复述完整。',
+    '【缺口】',
+    '',
+    '我按「是否阻塞开工」排序。',
+    '',
+    '1. **【阻塞】工作目录里没有插件仓库。** 需要路径。',
+    '',
+    '2. **【需授权】gh 已登录，但是哪个账号。**',
+    '',
+    '---',
+    '',
+    'STATUS: NEED-INPUT',
+  ].join('\n'));
+  assert.equal(hs.gaps.length, 3, JSON.stringify(hs.gaps));
+  assert.ok(hs.gaps[1]!.includes('工作目录里没有插件仓库'));
+  assert.ok(hs.gaps[2]!.includes('gh 已登录'));
+  assert.ok(!hs.gaps.some((gap) => /^[-*_~.\s]*$/.test(gap)), 'separator residue is not a gap');
+  assert.equal(hs.status, 'need-input');
+});
+
 test('a bare 无 in the gap block means no gaps', () => {
   const hs = parseHandshake('version: 2\n【回读】清楚。\n【缺口】\n无\nSTATUS: READY');
   assert.equal(hs.status, 'ready');
@@ -87,11 +110,23 @@ test('renderAckReply: invalid handshake returns repair instructions instead of a
   assert.ok(!reply.includes('✓'));
 });
 
-test('renderAckReply: READY confirms and stamps the id@version reference', () => {
-  const reply = renderAckReply(parseHandshake(readyText), task, '窗口A');
+test('renderAckReply: gap-free READY confirms and stamps the id@version reference', () => {
+  const clean = 'version: 2\n【回读】复述完整。\n【缺口】\n无\nSTATUS: READY';
+  assert.equal(needsSenderInput(parseHandshake(clean)), false);
+  const reply = renderAckReply(parseHandshake(clean), task, '窗口A');
   assert.ok(reply.startsWith('✓'));
   assert.ok(reply.includes('20261001-a3f2@v2'));
   assert.ok(!reply.includes('⚠'));
+});
+
+test('a READY that still lists gaps is demoted to pending answers, not waved through', () => {
+  const hs = parseHandshake(readyText);
+  assert.equal(hs.status, 'ready');
+  assert.equal(needsSenderInput(hs), true);
+  const reply = renderAckReply(hs, task, '窗口A', ['Q3', 'Q4']);
+  assert.ok(reply.startsWith('△'));
+  assert.ok(reply.includes('标了 READY 却列了 2 条缺口'));
+  assert.ok(!reply.includes('可以放心让它开工'));
 });
 
 test('renderAckReply: READY against an old version is caught, not waved through', () => {

@@ -13,13 +13,14 @@ export {
   renderCompileInstruction,
   outboxName,
   HANDSHAKE_TEXT,
+  EMPTY_SECTION,
   STATUS_LABEL,
   type TaskBook,
   type TaskStatus,
   type ForgeMode,
   type AnswerResult,
 } from './taskbook.ts';
-export { parseHandshake, isStaleVersion, renderAckReply, type Handshake, type HandshakeStatus } from './handshake.ts';
+export { parseHandshake, isStaleVersion, needsSenderInput, renderAckReply, type Handshake, type HandshakeStatus } from './handshake.ts';
 export {
   parseLine,
   parseLedger,

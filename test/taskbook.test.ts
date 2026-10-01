@@ -13,6 +13,7 @@ import {
   renderCompileInstruction,
   outboxName,
   HANDSHAKE_TEXT,
+  EMPTY_SECTION,
   type TaskBook,
 } from '../src/taskbook.ts';
 
@@ -89,6 +90,29 @@ test('applyAnswer moves the gap into DECISIONS, renumbers, and bumps version', (
   // decision numbering counts existing D lines even without the second one
   const onlyD0 = applyAnswer({ ...base, decisions: '' }, 'Q2', '口径见 A2');
   if (onlyD0.kind === 'answered') assert.ok(onlyD0.task.decisions.includes('D1（原 Q2 已答）'));
+});
+
+test('every answer gets its own decision id — the full-width tail must not reset the count', () => {
+  const first = applyAnswer(base, 'Q1', '香槟金在表内', new Date('2026-10-02T09:00:00Z'));
+  assert.equal(first.kind, 'answered');
+  if (first.kind !== 'answered') return;
+  assert.equal(first.decisionId, 'D2');
+  const second = applyAnswer(first.task, 'Q2', '见光板按展开面积计价', new Date('2026-10-02T09:01:00Z'));
+  if (second.kind !== 'answered') return;
+  assert.equal(second.decisionId, 'D3');
+  assert.equal(second.task.version, 3);
+  assert.equal(second.task.decisions.split(/\r?\n/).filter((line) => /^D\d+/.test(line)).length, 3);
+});
+
+test('an emptied section renders as （无） and reads back as empty again', () => {
+  const drained: TaskBook = { ...base, open: '', context: '' };
+  const md = renderTaskMarkdown(drained);
+  assert.ok(md.includes(`## 开放缺口（OPEN）\n${EMPTY_SECTION}`));
+  assert.equal(parseTaskMarkdown(md).task!.open, '');
+  assert.equal(parseTaskMarkdown(md).task!.context, '');
+  // and answering a gap that came back from a relayed file still finds its line
+  const answered = applyAnswer(parseTaskMarkdown(md).task!, 'Q1', 'x');
+  assert.equal(answered.kind, 'missing');
 });
 
 test('renderTaskMarkdown carries frontmatter, all sections, and the fixed handshake', () => {

@@ -21,11 +21,22 @@ const MARKERS = { restatement: '【回读】', gaps: '【缺口】' } as const;
 /** 1. / 1、 / 1) / - 1. … numbered gap lines; bare "无" lines mean no gaps. */
 const NUMBERED_RE = /^\s*(?:[-*]\s*)?(\d{1,3})\s*[.、)．]\s*(.+)$/;
 
+/** `---` rules and the `**` left behind by a cut-off bold marker are not gaps. */
+const CHROME_RE = /^[-*_~.＝=\s]+$/;
+
+/** A section ends at the *other* contract marker or at a STATUS line. It must not
+ * end at any 【…】 it sees: receivers bracket their own severity tags inside gap
+ * items (`1. **【阻塞】**…`), and that used to truncate the list to nothing. */
 function sectionAfter(text: string, marker: string): string {
   const start = text.indexOf(marker);
   if (start === -1) return '';
   const rest = text.slice(start + marker.length);
-  const next = rest.search(/【[^】]{1,6}】|^\s*STATUS\s*[:：]/im);
+  const ends: number[] = [];
+  for (const other of Object.values(MARKERS)) {
+    if (other !== marker) ends.push(rest.indexOf(other));
+  }
+  ends.push(rest.search(/^\s*\*{0,2}STATUS\s*[:：]/im));
+  const next = ends.filter((index) => index >= 0).sort((a, b) => a - b)[0] ?? -1;
   return (next === -1 ? rest : rest.slice(0, next)).trim();
 }
 
@@ -53,12 +64,21 @@ export function parseHandshake(input: string): Handshake {
       const clean = line.trim();
       if (!clean) continue;
       if (/^(无|none|没有)$/i.test(clean)) break;
+      if (CHROME_RE.test(clean)) continue;
       const numbered = NUMBERED_RE.exec(clean);
-      gaps.push(numbered ? numbered[2]!.trim() : clean.replace(/^[-*]\s*/, ''));
+      const body = (numbered ? numbered[2]! : clean.replace(/^[-*]\s*/, '')).replace(/\*\*/g, '').replace(/^[\s#]+|[\s]+$/g, '');
+      if (!body || CHROME_RE.test(body)) continue;
+      gaps.push(body);
     }
   }
 
   return { ok: status !== null && restatement !== '' && version !== null, status, version, restatement, gaps, issues };
+}
+
+/** A receiver that stamps READY while still listing questions has answered them on
+ * the sender's behalf. That is not a green light — see the STATUS rule in HANDSHAKE_TEXT. */
+export function needsSenderInput(hs: Handshake): boolean {
+  return hs.gaps.length > 0 && (hs.status === 'need-input' || hs.status === 'ready');
 }
 
 export function isStaleVersion(hs: Handshake, current: number): boolean {
@@ -83,15 +103,18 @@ export function renderAckReply(
   const stale = isStaleVersion(hs, task.version)
     ? [`⚠ 对方确认的是 v${hs.version}，最新版是 v${task.version}——回读按旧版处理，需要把最新版重新 relay 并让对方重新回读。`]
     : [];
-  if (hs.status === 'ready') {
+  if (hs.status === 'ready' && !needsSenderInput(hs)) {
     return [
       `✓ ${target} 回读通过（${task.id}@v${task.version}，STATUS: READY），可以放心让它开工。`,
       ...stale,
       '后续所有交接引用该任务时都带上版本号：' + `${task.id}@v${task.version}。`,
     ].join('\n');
   }
+  const header = hs.status === 'ready'
+    ? `△ ${target} 标了 READY 却列了 ${hs.gaps.length} 条缺口（${task.id}@v${task.version}）——缺口是它自己替你默认的，按 NEED-INPUT 处理：`
+    : `△ ${target} 回读完成但有待补缺口（${task.id}@v${task.version}，STATUS: NEED-INPUT）：`;
   return [
-    `△ ${target} 回读完成但有待补缺口（${task.id}@v${task.version}，STATUS: NEED-INPUT）：`,
+    header,
     ...hs.gaps.map((gap, index) => `- ${gapLabel(index)}: ${gap}`),
     ...stale,
     hs.gaps.length

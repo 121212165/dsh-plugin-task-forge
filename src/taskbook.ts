@@ -82,8 +82,11 @@ function openLines(open: string): string[] {
   return open.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 }
 
+/** Generated decision lines carry a full-width tail (`D15（原 Q1 已答）: …`), so the
+ * id marker must not require a specific character after the digits — otherwise every
+ * answer reuses the same number and the receiver can no longer cite a decision. */
 function decisionCount(decisions: string): number {
-  return decisions.split(/\r?\n/).filter((line) => /^\s*D\d+(?=$|[\s:：.)、])/.test(line)).length;
+  return decisions.split(/\r?\n/).filter((line) => /^\s*D\d+/.test(line)).length;
 }
 
 export function findOpenLine(task: TaskBook, qid: string): string | null {
@@ -121,6 +124,7 @@ export const HANDSHAKE_TEXT = [
   '1. 【回读】用你自己的话复述目标、约束、验收标准（逐条对应原文编号）。',
   '2. 【缺口】你发现的信息不足或矛盾之处，逐条编号列出；没有则写"无"。',
   '3. 第一行写 version: <本文件 frontmatter 里的 version>，最后一行写 STATUS: READY 或 STATUS: NEED-INPUT。',
+  'STATUS 的判据只有一条：【缺口】里只要列了任何一条待补问题，就必须写 NEED-INPUT；自己替发送方定的默认值也算待补问题。READY 表示你确认无需再问任何人就能开工。',
   '发送方会回答缺口并出新版任务书（version+1）；你确认的版本号必须与最新版一致，旧版本回读无效。',
   '在你输出 STATUS: READY 之前，不要创建文件、不要改代码、不要开始执行任务。',
 ].join('\n');
@@ -133,6 +137,9 @@ const SECTIONS: Array<{ key: keyof TaskBook & string; heading: string }> = [
   { key: 'decisions', heading: '## 已定决策（DECISIONS）' },
   { key: 'open', heading: '## 开放缺口（OPEN）' },
 ];
+
+/** What an empty section prints as, and what must read back as empty again. */
+export const EMPTY_SECTION = '（无）';
 
 export function renderTaskMarkdown(task: TaskBook): string {
   const frontmatter = [
@@ -147,7 +154,7 @@ export function renderTaskMarkdown(task: TaskBook): string {
     `targets: [${task.targets.join(', ')}]`,
     '---',
   ].join('\n');
-  const body = SECTIONS.map(({ key, heading }) => `${heading}\n${(task[key] as string).trim() || '（无）'}`);
+  const body = SECTIONS.map(({ key, heading }) => `${heading}\n${(task[key] as string).trim() || EMPTY_SECTION}`);
   return [frontmatter, '', `# 任务书 ${task.id} · ${task.title}（v${task.version}）`, '', ...body, '', '## 握手指令（HANDSHAKE）', '', HANDSHAKE_TEXT, ''].join('\n');
 }
 
@@ -188,7 +195,8 @@ export function parseTaskMarkdown(content: string): { task: TaskBook | null; iss
   flush();
   const pick = (heading: string): string => {
     const hit = [...sections.keys()].find((key) => key.startsWith(heading));
-    return hit ? sections.get(hit)! : '';
+    const value = hit ? sections.get(hit)! : '';
+    return value.trim() === EMPTY_SECTION ? '' : value;
   };
 
   const task: TaskBook = {

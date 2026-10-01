@@ -28,7 +28,7 @@ import {
   type ForgeMode,
   type TaskBook,
 } from './taskbook.ts';
-import { isStaleVersion, parseHandshake, renderAckReply } from './handshake.ts';
+import { isStaleVersion, needsSenderInput, parseHandshake, renderAckReply } from './handshake.ts';
 import { eventLine, foldStates, parseLedger, renderForgeList, renderSection } from './ledger.ts';
 
 export const name = 'task-forge';
@@ -241,14 +241,14 @@ export function apply(ctx: Context, config: Config): void {
       const hs = parseHandshake(content);
       if (!hs.ok) return { kind: 'error', text: renderAckReply(hs, task, '对方') };
       const now = new Date().toISOString();
-      if (hs.status === 'ready' && !isStaleVersion(hs, task.version)) {
+      if (!needsSenderInput(hs) && !isStaleVersion(hs, task.version)) {
         task.status = 'ready';
         task.updatedAt = now;
         store.saveTask(task);
         store.appendEvent({ ts: now, task: task.id, event: 'acked', version: task.version, status: 'ready', title: task.title, target: '握手通过' });
         return { kind: 'success', text: renderAckReply(hs, task, '对方') };
       }
-      const qids = hs.status === 'need-input' && hs.gaps.length ? nextGapQids(task.open, hs.gaps.length) : [];
+      const qids = needsSenderInput(hs) ? nextGapQids(task.open, hs.gaps.length) : [];
       if (qids.length) {
         task.open = [task.open.trim(), ...hs.gaps.map((gap, index) => `${qids[index]} (来自对方回读): ${gap}`)].filter(Boolean).join('\n');
         task.updatedAt = now;
@@ -261,7 +261,9 @@ export function apply(ctx: Context, config: Config): void {
         version: hs.version ?? task.version,
         status: task.status,
         title: task.title,
-        note: hs.status === 'need-input' ? `need-input · 缺口 ${hs.gaps.length} 条` : `stale v${hs.version}`,
+        note: needsSenderInput(hs)
+          ? `${hs.status === 'ready' ? 'READY 但列了缺口' : 'need-input'} · 缺口 ${hs.gaps.length} 条`
+          : `stale v${hs.version}`,
       });
       return { kind: 'success', text: renderAckReply(hs, task, '对方', qids) };
     },
