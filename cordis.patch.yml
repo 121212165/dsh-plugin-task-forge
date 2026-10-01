@@ -1,0 +1,10 @@
+# Mounts task-forge into a dsh profile. Needs dsh-system-prompt (already in base profiles).
+- insert:
+    - id: task-forge
+      name: dsh-plugin-task-forge
+      config:
+        enabled: true
+        # dataPath: ~/.dsh/task-forge
+        limit: 8     # max live tasks injected into the system prompt
+        maxChars: 900 # char budget for those lines
+        order: 690    # prompt section order (pinboard sits at 700)
