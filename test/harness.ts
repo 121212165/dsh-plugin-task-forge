@@ -22,6 +22,8 @@ export interface CapturedTool {
   description: string;
   parameters: Record<string, unknown>;
   execute: (args: Record<string, unknown>) => Promise<string>;
+  presentCall?: (args: Record<string, unknown>) => { card: string; title: string; kind?: string; rawInput?: unknown; locations?: Array<{ path: string }> };
+  presentResult?: (args: Record<string, unknown>, result: string) => { card: string; title: string; content?: Array<{ type: string; text?: string }> };
 }
 
 export interface CapturedSection {
@@ -102,7 +104,7 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     followups,
     dataPath,
     apply(config: Record<string, unknown>) {
-      applied ??= import('../src/plugin.ts').then(({ apply }) => apply(ctx as never, { enabled: true, limit: 8, maxChars: 900, order: 690, ...config } as never));
+      applied ??= import('../src/plugin.ts').then(({ apply }) => apply(ctx as never, { enabled: true, hubPath: join(dataPath, 'hub'), limit: 8, maxChars: 900, order: 690, ...config } as never));
       return applied;
     },
     command(name: string): CapturedCommand {

@@ -14,22 +14,30 @@ import type {} from '@deepseek-ai/dsh-commands';
 import type {} from '@deepseek-ai/dsh-system-prompt';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import {
   applyAnswer,
   deriveTitle,
+  forgeCardTitle,
   makeTaskId,
   outboxName,
   parseTaskMarkdown,
+  preservedAnswers,
+  remainingGapIds,
   renderCompileInstruction,
   renderTaskMarkdown,
+  targetNames,
   validateTask,
+  withPhase,
+  withTarget,
+  withTargetAcked,
   type ForgeMode,
   type TaskBook,
 } from './taskbook.ts';
 import { isStaleVersion, needsSenderInput, parseHandshake, renderAckReply } from './handshake.ts';
 import { eventLine, foldStates, parseLedger, renderForgeList, renderSection, type TaskDetail } from './ledger.ts';
+import { IDE_TARGETS, hubReferencePath, ideTargetFor, parseIdeTarget, renderIdeRelayNote } from './ide-targets.ts';
 
 export const name = 'task-forge';
 export const inject = ['commands', 'tools', 'systemPrompt', 'llm', 'agents'];
@@ -37,6 +45,8 @@ export const inject = ['commands', 'tools', 'systemPrompt', 'llm', 'agents'];
 export interface Config {
   enabled: boolean;
   dataPath?: string;
+  /** where a `--to ide:*` copy lands, relative to the session cwd */
+  hubPath: string;
   limit: number;
   maxChars: number;
   order: number;
@@ -45,6 +55,7 @@ export interface Config {
 export const Config = Schema.object({
   enabled: Schema.boolean().default(true),
   dataPath: Schema.string(),
+  hubPath: Schema.string().default('.hub'),
   limit: Schema.natural().default(8),
   maxChars: Schema.natural().default(900),
   order: Schema.number().default(690),
@@ -103,9 +114,16 @@ export class ForgeStore {
 
 // parseTaskMarkdown lives in the pure layer; parse errors on load must name the task.
 
-function nextGapQids(open: string, count: number): string[] {
-  const existing = open.split(/\r?\n/).filter((line) => /^\s*Q\d+(?=$|[\s:：.)、])/.test(line)).length;
-  return Array.from({ length: count }, (_, index) => `Q${existing + index + 1}`);
+/** Gap numbers are never reused: answering Q1 shortens OPEN, so a count-based next
+ * number would hand "Q1" to a brand-new question — and an answered Q1 still shows up
+ * as `D#（原 Q1 已答）`, which the receiver cites. Number past both. */
+function nextGapQids(task: TaskBook, count: number): string[] {
+  const numbers = [
+    ...remainingGapIds(task.open).map((qid) => Number.parseInt(qid.slice(1), 10)),
+    ...[...task.decisions.matchAll(/原\s*Q(\d+)/g)].map((match) => Number.parseInt(match[1]!, 10)),
+  ];
+  const highest = numbers.length ? Math.max(...numbers) : 0;
+  return Array.from({ length: count }, (_, index) => `Q${highest + index + 1}`);
 }
 
 export function apply(ctx: Context, config: Config): void {
@@ -116,6 +134,9 @@ export function apply(ctx: Context, config: Config): void {
   if (!Number.isInteger(config.limit) || config.limit < 1) throw new TypeError('task-forge: limit must be a positive integer');
   if (!Number.isInteger(config.maxChars) || config.maxChars < 40) throw new TypeError('task-forge: maxChars must be >= 40');
   if (!Number.isFinite(config.order)) throw new TypeError('task-forge: order must be a finite number');
+  if (typeof config.hubPath !== 'string' || !config.hubPath.trim() || config.hubPath.includes('\n')) {
+    throw new TypeError('task-forge: hubPath must be a single-line relative directory');
+  }
 
   const store = new ForgeStore(config.dataPath);
 
@@ -201,71 +222,84 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.commands.register({
     name: 'relay',
-    description: '导出任务书交接包（自包含单文件，含握手指令）：/relay <id> [--to <窗口名>]',
-    input: { hint: '<id> [--to <窗口名>]' },
+    description: '导出任务书交接包（自包含单文件，含握手指令）：/relay <id> [--to <窗口名>|ide:<工具名>]',
+    input: { hint: '<id> [--to <窗口名>|ide:zcode]' },
     handler: ({ rawInput }) => {
-      const found = taskById(String(rawInput ?? ''));
+      const raw = String(rawInput ?? '');
+      const found = taskById(raw);
       if ('error' in found) return { kind: 'error', text: `没有任务书 ${found.error || '(空)'}。/forge-list 先看台账。` };
+      const toMatch = /\s--to\s+(\S+)/.exec(raw);
+      const requested = toMatch ? parseIdeTarget(toMatch[1]) : null;
+      const ide = requested === null ? null : ideTargetFor(requested);
+      if (requested !== null && ide === null) {
+        return { kind: 'error', text: `不认识 ide:${requested}。可派发：${IDE_TARGETS.map((target) => `ide:${target.tool}`).join(' / ')}。不带 ide: 前缀就按普通窗口名处理（把文件贴给那个窗口）。` };
+      }
+      const target = requested !== null ? `ide:${requested}` : (toMatch?.[1] ?? '未命名窗口');
       const task = store.loadTask(found.id)!;
-      const toMatch = /\s--to\s+(\S+)/.exec(String(rawInput ?? ''));
-      const target = toMatch?.[1] ?? '未命名窗口';
       const now = new Date().toISOString();
-      if (!task.targets.includes(target)) task.targets.push(target);
+      task.targets = withTarget(task.targets, target);
       task.status = 'relayed';
       task.updatedAt = now;
       store.saveTask(task);
       store.appendEvent({ ts: now, task: task.id, event: 'relayed', version: task.version, status: task.status, title: task.title, target });
       const dest = store.outboxPath(outboxName(task));
-      writeAtomic(dest, renderTaskMarkdown(task));
-      return {
-        kind: 'success',
-        text: [
-          `交接包已导出：${dest}`,
-          `把该文件全文粘贴给「${target}」窗口的 AI。对方必须按文内握手指令先回读（复述+缺口+STATUS），STATUS: READY 之前不会开工。`,
-          `收到回读后：/ack ${task.id} <粘贴回读内容>`,
-        ].join('\n'),
-      };
+      const markdown = renderTaskMarkdown(task);
+      writeAtomic(dest, markdown);
+      const lines = [`交接包已导出：${dest}`];
+      if (ide) {
+        const ref = resolve(hubReferencePath(task, config.hubPath));
+        writeAtomic(ref, markdown);
+        lines.push(renderIdeRelayNote(ide, ref));
+      } else {
+        lines.push(`把该文件全文粘贴给「${target}」窗口的 AI。对方必须按文内握手指令先回读（复述+缺口+STATUS），STATUS: READY 之前不会开工。`);
+      }
+      lines.push(`收到回读后：/ack ${task.id}${toMatch ? ` --to ${target}` : ''} <粘贴回读内容>`);
+      return { kind: 'success', text: lines.join('\n') };
     },
   });
 
   ctx.commands.register({
     name: 'ack',
-    description: '登记接收方的回读：/ack <id> <回读全文>（READY 放行 / NEED-INPUT 落成缺口）',
-    input: { hint: '<id> <回读全文>' },
+    description: '登记接收方的回读：/ack <id> [--to <窗口名>] <回读全文>（READY 放行 / NEED-INPUT 落成缺口）',
+    input: { hint: '<id> [--to <窗口名>] <回读全文>' },
     handler: ({ rawInput }) => {
       const input = String(rawInput ?? '').trim();
       const found = taskById(input);
-      if ('error' in found) return { kind: 'error', text: `用法：/ack <id> <回读全文>。没有任务书 ${found.error || '(空)'}。` };
+      if ('error' in found) return { kind: 'error', text: `用法：/ack <id> [--to <窗口名>] <回读全文>。没有任务书 ${found.error || '(空)'}。` };
       const task = store.loadTask(found.id)!;
-      const content = input.slice(input.indexOf(found.id) + found.id.length).trim();
+      const toMatch = /\s--to\s+(\S+)/.exec(input);
+      // One holder needs no flag; several windows must say which one read back,
+      // otherwise the per-window ledger would credit the wrong window.
+      const target = toMatch?.[1] ?? (task.targets.length === 1 ? task.targets[0]!.name : null);
+      const content = input.slice(input.indexOf(found.id) + found.id.length).replace(/\s--to\s+\S+/, '').trim();
       const hs = parseHandshake(content);
-      if (!hs.ok) return { kind: 'error', text: renderAckReply(hs, task, '对方') };
+      if (!hs.ok) return { kind: 'error', text: renderAckReply(hs, task, target ?? '对方') };
       const now = new Date().toISOString();
-      if (!needsSenderInput(hs) && !isStaleVersion(hs, task.version)) {
-        task.status = 'ready';
-        task.updatedAt = now;
-        store.saveTask(task);
-        store.appendEvent({ ts: now, task: task.id, event: 'acked', version: task.version, status: 'ready', title: task.title, target: '握手通过' });
-        return { kind: 'success', text: renderAckReply(hs, task, '对方') };
-      }
-      const qids = needsSenderInput(hs) ? nextGapQids(task.open, hs.gaps.length) : [];
-      if (qids.length) {
-        task.open = [task.open.trim(), ...hs.gaps.map((gap, index) => `${qids[index]} (来自对方回读): ${gap}`)].filter(Boolean).join('\n');
-        task.updatedAt = now;
-        store.saveTask(task);
-      }
+      const wantsInput = needsSenderInput(hs);
+      const passing = !wantsInput && !isStaleVersion(hs, task.version);
+      if (target && !wantsInput) task.targets = withTargetAcked(task.targets, target, hs.version!, now);
+      const qids = wantsInput ? nextGapQids(task, hs.gaps.length) : [];
+      if (qids.length) task.open = [task.open.trim(), ...hs.gaps.map((gap, index) => `${qids[index]} (来自对方回读): ${gap}`)].filter(Boolean).join('\n');
+      if (passing) task.status = 'ready';
+      task.updatedAt = now;
+      store.saveTask(task);
       store.appendEvent({
         ts: now,
         task: task.id,
         event: 'acked',
-        version: hs.version ?? task.version,
-        status: task.status,
+        version: passing ? task.version : (hs.version ?? task.version),
+        status: passing ? 'ready' : task.status,
         title: task.title,
-        note: needsSenderInput(hs)
-          ? `${hs.status === 'ready' ? 'READY 但列了缺口' : 'need-input'} · 缺口 ${hs.gaps.length} 条`
-          : `stale v${hs.version}`,
+        target: target ?? (passing ? '握手通过' : undefined),
+        note: passing
+          ? undefined
+          : wantsInput
+            ? `${hs.status === 'ready' ? 'READY 但列了缺口' : 'need-input'} · 缺口 ${hs.gaps.length} 条`
+            : `stale v${hs.version}`,
       });
-      return { kind: 'success', text: renderAckReply(hs, task, '对方', qids) };
+      const who = target ?? '对方';
+      const unnamed = target === null && task.targets.length > 1 ? `（有 ${task.targets.length} 个窗口，下次加 --to <窗口名> 才记得住是谁回读的）` : '';
+      return { kind: 'success', text: renderAckReply(hs, task, who, qids) + unnamed };
     },
   });
 
@@ -294,11 +328,27 @@ export function apply(ctx: Context, config: Config): void {
         title: result.task.title,
         note: `${result.qid} → ${result.decisionId}`,
       });
-      const targets = result.task.targets.length ? result.task.targets.join(' 和 ') : '还没有窗口交接过';
-      return {
-        kind: 'success',
-        text: `${result.qid} 已答并写入 ${result.decisionId}，任务书现在是 ${result.task.id}@v${result.task.version}。已交接窗口：${targets}——需要把新版重新 /relay 给它们，让对方按新版重新回读。`,
-      };
+      const targets = targetNames(result.task.targets).join(' 和 ') || '还没有窗口交接过';
+      const base = `${result.qid} 已答并写入 ${result.decisionId}，任务书现在是 ${result.task.id}@v${result.task.version}。已交接窗口：${targets}——需要把新版重新 /relay 给它们，让对方按新版重新回读。`;
+      const remaining = remainingGapIds(result.task.open);
+      if (result.task.phase !== 'awaiting-answers') return { kind: 'success', text: base };
+      if (remaining.length) {
+        return { kind: 'success', text: `${base}\ninterview 还剩 ${remaining.join(' ')} 没答；答完最后一条就会自动开始编译。` };
+      }
+      // Last answer of the interview: hand the book back to the compiler, then clear the
+      // phase so a repeated /answer on the same version cannot fire the loop twice.
+      const compiled = injectCompile(result.task, result.task.goal);
+      store.saveTask(withPhase(result.task));
+      store.appendEvent({
+        ts: new Date().toISOString(),
+        task: result.task.id,
+        event: 'revised',
+        version: result.task.version,
+        status: result.task.status,
+        title: result.task.title,
+        note: 'interview 答完 → 重新编译',
+      });
+      return { kind: 'success', text: `${base}\ninterview 的问题已全部答完。${compiled}` };
     },
   });
 
@@ -315,8 +365,9 @@ export function apply(ctx: Context, config: Config): void {
           if (!task) continue;
           details.set(state.id, {
             mode: task.mode,
-            gaps: task.open.split(/\r?\n/).filter((line) => /^\s*Q\d+(?=$|[\s:：.)、])/.test(line)).length,
+            gaps: remainingGapIds(task.open).length,
             decisions: task.decisions.split(/\r?\n/).filter((line) => /^\s*D\d+(?=$|[\s:：.)、])/.test(line)).length,
+            targets: task.targets,
           });
         } catch {
           details.set(state.id, { gaps: 0, decisions: 0, missing: true });
@@ -363,6 +414,22 @@ export function apply(ctx: Context, config: Config): void {
         schema: { type: 'string' } as const,
         render: (_args, value) => [{ type: 'text', text: value }],
       },
+      presentCall: (args) => {
+        const id = String(args.task_id ?? '').trim();
+        const asking = String(args.questions ?? '').trim() && !String(args.goal ?? '').trim();
+        return {
+          card: 'generic' as const,
+          title: asking ? `登记 interview 问题清单 · ${id}` : `写入任务书 ${id}`,
+          kind: 'edit' as const,
+          rawInput: asking ? String(args.questions) : String(args.goal ?? ''),
+          locations: [{ path: store.taskPath(id) }],
+        };
+      },
+      presentResult: (_args, result) => ({
+        card: 'generic' as const,
+        title: forgeCardTitle(String(result)),
+        content: [{ type: 'text' as const, text: String(result) }],
+      }),
       async execute(args) {
         const id = String(args.task_id ?? '').trim();
         const task = store.loadTask(id);
@@ -370,17 +437,20 @@ export function apply(ctx: Context, config: Config): void {
         const now = new Date().toISOString();
         const questions = typeof args.questions === 'string' ? args.questions.trim() : '';
         const isInterviewRound = questions.length > 0 && !String(args.goal ?? '').trim();
-        const next: TaskBook = {
+        const writtenDecisions = String(args.decisions ?? task.decisions) || task.decisions;
+        const preserved = isInterviewRound ? { decisions: writtenDecisions, restored: [] as string[] } : preservedAnswers(task.decisions, writtenDecisions);
+        const merged: TaskBook = {
           ...task,
           title: String(args.title ?? task.title).trim() || task.title,
           goal: String(args.goal ?? task.goal) || task.goal,
           context: String(args.context ?? task.context) || task.context,
           constraints: String(args.constraints ?? task.constraints) || task.constraints,
           acceptance: String(args.acceptance ?? task.acceptance) || task.acceptance,
-          decisions: String(args.decisions ?? task.decisions) || task.decisions,
+          decisions: preserved.decisions,
           open: (isInterviewRound ? questions : String(args.open ?? task.open)) || task.open,
           updatedAt: now,
         };
+        const next = isInterviewRound ? withPhase(merged, 'awaiting-answers') : merged;
         const issues = validateTask(next);
         if (issues.length && !isInterviewRound) return `字段没过校验，未落盘：\n- ${issues.join('\n- ')}\n修好后重新调用。`;
         store.saveTask(next);
@@ -393,9 +463,10 @@ export function apply(ctx: Context, config: Config): void {
           title: next.title,
           note: isInterviewRound ? 'interview 问题清单' : 'compiled',
         });
+        const restored = preserved.restored.length ? `\n（编译时漏掉的 ${preserved.restored.length} 条用户答复已原样补回 DECISIONS）` : '';
         return isInterviewRound
-          ? `任务 ${next.id} 的问题清单已记录。把问题转给用户，等答复后把每个答案连同完整字段一起再调 forge_write。`
-          : `任务书 ${next.id}@v${next.version} 已落盘。告诉用户：/relay ${next.id} [--to <窗口名>] 导出交接包。`;
+          ? `任务 ${next.id} 的问题清单已记录（${remainingGapIds(next.open).length} 问）。把它们原样转给用户，并告诉他：用 /answer ${next.id} Q1 <答案> 逐条直答，答完最后一个 Q 会自动重新注入编译指令。`
+          : `任务书 ${next.id}@v${next.version} 已落盘。告诉用户：/relay ${next.id} [--to <窗口名>|ide:<工具名>] 导出交接包。${restored}`;
       },
     }),
   );

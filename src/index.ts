@@ -12,15 +12,28 @@ export {
   parseTaskMarkdown,
   renderCompileInstruction,
   outboxName,
+  remainingGapIds,
+  parseTargets,
+  preservedAnswers,
+  forgeCardTitle,
+  withPhase,
+  targetNames,
+  withTarget,
+  withTargetAcked,
+  targetMark,
+  targetSummary,
   HANDSHAKE_TEXT,
   EMPTY_SECTION,
   STATUS_LABEL,
   type TaskBook,
   type TaskStatus,
+  type TaskTarget,
+  type TaskPhase,
   type ForgeMode,
   type AnswerResult,
 } from './taskbook.ts';
 export { parseHandshake, isStaleVersion, needsSenderInput, renderAckReply, type Handshake, type HandshakeStatus } from './handshake.ts';
+export { IDE_TARGETS, ideTargetFor, parseIdeTarget, hubReferencePath, renderIdeRelayNote, type IdeTarget } from './ide-targets.ts';
 export {
   parseLine,
   parseLedger,

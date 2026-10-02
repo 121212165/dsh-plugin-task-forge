@@ -3,7 +3,7 @@
  * version of which task" — the system-prompt section reads it live, so a
  * relay or ack lands in every future session without restarts. */
 
-import { STATUS_LABEL, type TaskStatus } from './taskbook.ts';
+import { STATUS_LABEL, targetSummary, type TaskStatus, type TaskTarget } from './taskbook.ts';
 
 export type LedgerEventKind = 'created' | 'revised' | 'relayed' | 'acked' | 'gap-resolved' | 'done';
 
@@ -144,6 +144,8 @@ export interface TaskDetail {
   mode?: string;
   gaps: number;
   decisions: number;
+  /** who holds the book and what version each of them read back */
+  targets?: TaskTarget[];
   missing?: boolean;
 }
 
@@ -170,7 +172,9 @@ export function renderForgeList(states: TaskState[], skipped = 0, details: Map<s
         if (detail.decisions) facts.push(`决策 ${detail.decisions}`);
       }
     }
-    if (state.targets.length) facts.push(`交接: ${state.targets.join(', ')}`);
+    // Per-window read-back comes from the task book; the ledger only knows names.
+    if (detail?.targets?.length) facts.push(`窗口: ${targetSummary(detail.targets, state.version)}`);
+    else if (state.targets.length) facts.push(`交接: ${state.targets.join(', ')}`);
     if (state.status === 'draft' && state.lastNote) facts.push(state.lastNote);
     lines.push('      ' + facts.join(' · '));
     const hint = nextStepHint(state.status, state.acksGap);

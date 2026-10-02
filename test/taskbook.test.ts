@@ -12,6 +12,15 @@ import {
   parseTaskMarkdown,
   renderCompileInstruction,
   outboxName,
+  parseTargets,
+  remainingGapIds,
+  withTarget,
+  withTargetAcked,
+  targetMark,
+  targetSummary,
+  preservedAnswers,
+  forgeCardTitle,
+  withPhase,
   HANDSHAKE_TEXT,
   EMPTY_SECTION,
   type TaskBook,
@@ -55,7 +64,7 @@ test('deriveTitle takes the first line, collapses spaces, and caps length', () =
 
 test('validateTask reports every broken field, and a clean book passes', () => {
   assert.deepEqual(validateTask(base), []);
-  const broken = validateTask({ ...base, id: 'nope', version: 0, status: 'nope' as never, mode: 'x' as never, title: '', createdAt: 'x', updatedAt: '', targets: [''], goal: ' ', acceptance: '' });
+  const broken = validateTask({ ...base, id: 'nope', version: 0, status: 'nope' as never, mode: 'x' as never, title: '', createdAt: 'x', updatedAt: '', targets: [{ name: '' }], goal: ' ', acceptance: '' });
   assert.equal(broken.length, 10);
 });
 
@@ -116,9 +125,9 @@ test('an emptied section renders as （无） and reads back as empty again', ()
 });
 
 test('renderTaskMarkdown carries frontmatter, all sections, and the fixed handshake', () => {
-  const md = renderTaskMarkdown({ ...base, targets: ['web-A', 'plugtest'] });
+  const md = renderTaskMarkdown({ ...base, targets: [{ name: 'web-A' }, { name: 'plugtest', ackedVersion: 2, ackedAt: '2026-10-01T09:00:00.000Z' }] });
   assert.ok(md.startsWith('---\nid: 20261001-a3f2\nversion: 1'));
-  assert.ok(md.includes('targets: [web-A, plugtest]'));
+  assert.ok(md.includes('targets: [web-A, plugtest@v2@2026-10-01T09:00:00.000Z]'), md.slice(0, 400));
   for (const heading of ['## 目标（GOAL）', '## 背景（CONTEXT）', '## 约束（CONSTRAINTS）', '## 验收标准（ACCEPTANCE）', '## 已定决策（DECISIONS）', '## 开放缺口（OPEN）', '## 握手指令（HANDSHAKE）']) {
     assert.ok(md.includes(heading), heading);
   }
@@ -128,7 +137,7 @@ test('renderTaskMarkdown carries frontmatter, all sections, and the fixed handsh
 });
 
 test('parseTaskMarkdown roundtrips renderTaskMarkdown, and reports garbage instead of throwing', () => {
-  const relayed = { ...base, version: 3, status: 'relayed' as const, targets: ['窗口A'] };
+  const relayed = { ...base, version: 3, status: 'relayed' as const, targets: [{ name: '窗口A' }] };
   const parsed = parseTaskMarkdown(renderTaskMarkdown(relayed));
   assert.deepEqual(parsed.issues, []);
   assert.deepEqual(parsed.task, relayed);
@@ -159,4 +168,75 @@ test('renderCompileInstruction switches guidance by mode and embeds the raw need
   const interview = renderCompileInstruction({ ...base, mode: 'interview' }, '帮我做个报价');
   assert.ok(interview.includes('interview 模式'));
   assert.ok(interview.includes('questions'));
+  assert.ok(interview.includes(`/answer ${base.id}`));
+
+  // the second interview round is a different instruction: answers in hand, compile now
+  const recompile = renderCompileInstruction({ ...base, mode: 'interview', phase: 'awaiting-answers' }, '帮我做个报价');
+  assert.ok(recompile.includes('interview 第二轮'), recompile);
+  assert.ok(recompile.includes('原 Qn 已答'));
+  assert.ok(!recompile.includes('interview 模式'));
+});
+
+test('targets read back from v0.1 plain names and carry the version each window confirmed', () => {
+  assert.deepEqual(parseTargets('[窗口A, 窗口B]'), [{ name: '窗口A' }, { name: '窗口B' }]);
+  assert.deepEqual(parseTargets(''), []);
+  assert.deepEqual(parseTargets('[plugtest@v2@2026-10-01T09:00:00.000Z]'), [{ name: 'plugtest', ackedVersion: 2, ackedAt: '2026-10-01T09:00:00.000Z' }]);
+  // a non-date tail is not an ack — keep the whole string as the window name
+  assert.deepEqual(parseTargets('[odd@v2@not-a-date]'), [{ name: 'odd@v2@not-a-date' }]);
+
+  const held = withTarget([{ name: '窗口A' }], '窗口A');
+  assert.equal(held.length, 1, 'relay twice does not fork the ack history');
+  const acked = withTargetAcked(held, '窗口A', 3, '2026-10-01T10:00:00.000Z');
+  assert.deepEqual(acked, [{ name: '窗口A', ackedAt: '2026-10-01T10:00:00.000Z', ackedVersion: 3 }]);
+  // an ack from a window /relay never named still counts as evidence
+  assert.equal(withTargetAcked([], '窗口C', 1, '2026-10-01T10:00:00.000Z')[0]!.name, '窗口C');
+
+  assert.equal(targetMark({ name: 'a' }, 3), '○');
+  assert.equal(targetMark({ name: 'a', ackedVersion: 3 }, 3), '✓');
+  assert.equal(targetMark({ name: 'a', ackedVersion: 1 }, 3), '◐');
+  assert.equal(targetSummary([{ name: '窗口A' }, { name: 'plugtest', ackedVersion: 2 }], 3), '窗口A○ / plugtest◐v2');
+  assert.equal(targetSummary([], 1), '还没交接过');
+
+  // and the whole book survives a write/read cycle with acks attached
+  const withAcks: TaskBook = { ...base, targets: [{ name: '窗口A' }, { name: 'plugtest', ackedVersion: 2, ackedAt: '2026-10-01T09:00:00.000Z' }] };
+  const round = parseTaskMarkdown(renderTaskMarkdown(withAcks));
+  assert.deepEqual(round.issues, []);
+  assert.deepEqual(round.task!.targets, withAcks.targets);
+});
+
+test('remainingGapIds lists what is still open, phase survives the file roundtrip', () => {
+  assert.deepEqual(remainingGapIds(base.open), ['Q1', 'Q2']);
+  assert.deepEqual(remainingGapIds(''), []);
+  assert.deepEqual(remainingGapIds('D1: 不是缺口\nQ12: 见光板'), ['Q12']);
+
+  const asked = withPhase(base, 'awaiting-answers');
+  assert.equal(asked.phase, 'awaiting-answers');
+  const parsed = parseTaskMarkdown(renderTaskMarkdown(asked));
+  assert.deepEqual(parsed.issues, []);
+  assert.equal(parsed.task!.phase, 'awaiting-answers');
+
+  // clearing must remove the key, not write `phase: undefined` into the file
+  const cleared = withPhase(asked);
+  assert.equal('phase' in cleared, false);
+  assert.ok(!renderTaskMarkdown(cleared).includes('phase:'));
+  assert.equal('phase' in parseTaskMarkdown(renderTaskMarkdown(cleared)).task!, false);
+
+  assert.deepEqual(validateTask({ ...base, phase: 'nonsense' as never }), ['phase 不合法: nonsense']);
+});
+
+test('the compiler cannot drop the user answers, and the card title says what happened', () => {
+  const answered = 'D1: 自己定的\nD2（原 Q1 已答）: 香槟金不在价目表\nD3（原 Q2 已答）: 按展开面积';
+  const rewritten = 'D1: 半自动+编号对齐\nD2（原 Q1 已答）: 香槟金不在价目表';
+  const kept = preservedAnswers(answered, rewritten);
+  assert.deepEqual(kept.restored, ['D3（原 Q2 已答）: 按展开面积']);
+  assert.ok(kept.decisions.endsWith('D3（原 Q2 已答）: 按展开面积'));
+  // writing back the same lines restores nothing, and no answers at all is a no-op
+  assert.deepEqual(preservedAnswers(answered, kept.decisions).restored, []);
+  assert.deepEqual(preservedAnswers('', rewritten), { decisions: rewritten, restored: [] });
+
+  assert.equal(forgeCardTitle(`任务书 ${base.id}@v2 已落盘。告诉用户：/relay`), `✓ 任务书 ${base.id}@v2`);
+  assert.equal(forgeCardTitle(`任务 ${base.id} 的问题清单已记录（2 问）。`), `✓ 已记录问题清单 ${base.id}`);
+  assert.equal(forgeCardTitle('字段没过校验，未落盘：\n- goal 不能为空'), '✗ 任务书字段没过校验');
+  assert.equal(forgeCardTitle('找不到任务 20990101-zzzz。'), '✗ 找不到对应任务书');
+  assert.equal(forgeCardTitle('没见过的一句话'), '没见过的一句话');
 });

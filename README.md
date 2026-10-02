@@ -1,6 +1,6 @@
 # dsh-plugin-task-forge
 
-**EN** · Compiles a rough need into a versioned task book, then hands it to any other AI window through a **read-back handshake**: `/forge` compiles, `/relay` emits, `/ack` proves the receiver got it byte-for-byte, `/answer` returns — aimed at the lossy copy-paste handoff between agents. · 26 `node --test` green · design notes in `TASK-FORGE-DESIGN.md`.
+**EN** · Compiles a rough need into a versioned task book, then hands it to any other AI window through a **read-back handshake**: `/forge` compiles, `/relay` emits, `/ack` proves the receiver got it byte-for-byte, `/answer` returns — aimed at the lossy copy-paste handoff between agents. · 61 `node --test` green · design notes in `TASK-FORGE-DESIGN.md`.
 
 dsh 插件：**先把大白话编译成任务书，再无损交接给任意窗口的 AI**。
 
@@ -33,10 +33,10 @@ dsh plugin --profile web add github:121212165/dsh-plugin-task-forge
 | 命令 | 作用 |
 |---|---|
 | `/forge <需求> [--mode interview]` | 编译。默认 auto：模型自己推演、暴露假设，定不了的写成编号缺口 Q1/Q2…；`--mode interview` 先出问题清单等你答完再编译。编译结果经 `forge_write` 工具落盘 |
-| `/relay <id> [--to <窗口名>]` | 导出交接包到 `~/.dsh/task-forge/outbox/<id>-v<n>.md`，全文粘贴给对方窗口 |
-| `/ack <id> <回读全文>` | 登记对方回读：READY 放行；NEED-INPUT 的缺口自动登记进任务书 |
-| `/answer <id> <Q编号> <答案>` | 缺口答案写入已定决策（D 编号），版本 +1，提醒你重新 relay 新版 |
-| `/forge-list` | 台账：任务 × 版本 × 交接窗口 × 状态 |
+| `/relay <id> [--to <窗口名>\|ide:<工具名>]` | 导出交接包到 `~/.dsh/task-forge/outbox/<id>-v<n>.md`，全文粘贴给对方窗口；`--to ide:zcode` 这类还会在当前项目 `<hubPath>/tasks/` 落一份同字节副本，并打印该 IDE 的接手步骤 |
+| `/ack <id> [--to <窗口名>] <回读全文>` | 登记对方回读：READY 放行并给该窗口盖上「确认了哪一版」；NEED-INPUT 的缺口自动登记进任务书。有多个窗口时必须带 `--to`，否则不知道该记在谁头上 |
+| `/answer <id> <Q编号> <答案>` | 缺口答案写入已定决策（D 编号），版本 +1，提醒你重新 relay 新版；**interview 任务答完最后一个 Q 会自动重新注入编译指令**，不用你二次触发 |
+| `/forge-list` | 台账：任务 × 版本 × 每个窗口的回读状态（`窗口A✓v2 / 窗口B◐v1 / 窗口C○`）× 缺口/决策计数 × 下一步 |
 | `/forge-done <id>` | 标记完成（不再注入系统提示） |
 
 ## 回读握手协议（无损的全部保障）
@@ -65,6 +65,18 @@ STATUS: READY 或 STATUS: NEED-INPUT
 
 进行中任务（非 done）按 limit/maxChars 预算注入每个会话的系统提示（`## 进行中任务（task-forge）`），新窗口一开就知道有哪些任务在飞。
 
+## 配置
+
+| 字段 | 默认 | 作用 |
+|---|---|---|
+| `enabled` | `true` | 关掉后 apply 直接返回，不注册任何命令/工具/注入 |
+| `dataPath` | `~/.dsh/task-forge` | 任务书本体、交接包与台账的根目录；支持 `~` 前缀 |
+| `hubPath` | `.hub` | `--to ide:<工具名>` 那份项目内副本的目录，相对当前工作目录解析（写绝对路径也可以） |
+| `limit` / `maxChars` | `8` / `900` | 注入段的条数与字符预算；超限的行截断而不是丢弃最新任务 |
+| `order` | `690` | 注入段在系统提示里的排序位置 |
+
+`limit`、`maxChars`、`order`、`hubPath` 都走启动自检：填错**启动即失败并点名 task-forge**，不会带着一个不可用的台账静默运行。
+
 ## 借鉴来源与差异（不盲目抄）
 
 | 来源 | 借鉴 | 改编 | 原创 |
@@ -82,17 +94,19 @@ STATUS: READY 或 STATUS: NEED-INPUT
 npm run check   # typecheck + node --test + tsc build
 ```
 
-47 个测试，两层：
+61 个测试，两层：
 
-- **纯函数层（30）**：任务书校验/版本推进/缺口应答、握手解析（中文冒号/旧版本/结构残缺/空缺口/自作主张的 READY 降级）、台账解析/折叠/注入预算；
-- **装配层（17，`test/harness.ts` + `test/plugin.test.ts`）**：真实 `apply()` 挂到脚本化 mock ctx 上（命令/工具/注入全部捕获，followup 走假会话），在真临时目录里驱动完整协议流——`/forge` 落盘并注入编译指令（含 headless 粘贴回退）、`forge_write` 校验拒绝与 interview 轮、`/relay` 导出交接包、`/ack` 垃圾输入拒绝/READY 放行/降级/旧版本拦截、`/answer` 版本推进、`/forge-done` 从注入摘除、坏配置启动点名。全家第一个有装配层覆盖的插件，harness 可直接复制给其他 17 个。
+- **纯函数层（38）**：任务书校验/版本推进/缺口应答、frontmatter 里每个窗口的回读版本（旧格式纯字符串照常解析）、interview 相位（`phase`）落盘与清除、答复被编译器丢掉时自动补回、握手解析（中文冒号/旧版本/结构残缺/空缺口/自作主张的 READY 降级）、台账解析/折叠/注入预算、IDE 派发表；
+- **装配层（23，`test/harness.ts` + `test/plugin.test.ts`）**：真实 `apply()` 挂到脚本化 mock ctx 上（命令/工具/注入/followup 全部捕获），在真临时目录里驱动完整协议流——`/forge` 落盘并注入编译指令（含 headless 粘贴回退）、`forge_write` 校验拒绝、interview 出问题清单 → `/answer` 答完最后一问**自动二次注入编译**、`/relay` 导出交接包与 `--to ide:*` 的项目内同字节副本、`/ack` 垃圾输入拒绝/READY 放行/降级/旧版本拦截/每窗口盖章、`/answer` 版本推进与缺口编号不复用、`/forge-list` 的每窗口状态、`forge_write` 的 presentCall/presentResult 卡片、坏配置启动点名。全家第一个有装配层覆盖的插件，harness 可直接复制给其他 17 个。
 
-## v0.2 路线（按使用频率决定）
+## 已做到 / 下一步
 
-- interview 模式的多轮访谈闭环（现在一轮问答）
-- `.forge/` 接入 ide-hub 的指针生成器，任务书直达各 IDE
-- 超长输入的非拦截"建议编译"提醒
-- relay 自动派发（`ctx.agents.followup()` 的运行时验证仍在观察）
+v0.2 已落地：interview 多轮闭环（答完最后一问自动重编译）、`--to ide:<工具名>` 派发（落项目内副本 + 逐 IDE 接手步骤）、每窗口回读台账（`✓当前版 / ◐旧版 / ○未回读`）、`forge_write` 的 presentCall/presentResult 卡片。
+
+- IDE 侧仍是**人工接手一步**：真自动注入等 ide-hub 的指针生成器（`/hub-init`）上线后接上；
+- `/relay` 会读 quota 的 `totals.json`，超预算时提前警告（跨插件文件契约，进行中）；
+- 超长输入的非拦截"建议编译"提醒；
+- `ctx.agents.followup()` 的运行时验证仍在观察（headless 无活动会话时走粘贴回退，已在测试里覆盖）。
 
 ## License
 

@@ -12,7 +12,7 @@ const task: TaskBook = {
   mode: 'auto',
   createdAt: '2026-10-01T08:00:00.000Z',
   updatedAt: '2026-10-01T09:00:00.000Z',
-  targets: ['窗口A'],
+  targets: [{ name: '窗口A' }],
   goal: '做一个报价引擎',
   context: '',
   constraints: '',
