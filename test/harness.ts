@@ -104,7 +104,16 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     followups,
     dataPath,
     apply(config: Record<string, unknown>) {
-      applied ??= import('../src/plugin.ts').then(({ apply }) => apply(ctx as never, { enabled: true, hubPath: join(dataPath, 'hub'), limit: 8, maxChars: 900, order: 690, ...config } as never));
+      applied ??= import('../src/plugin.ts').then(({ apply }) => apply(ctx as never, {
+        enabled: true,
+        hubPath: join(dataPath, 'hub'),
+        // never let a test read the real ~/.dsh/quota/summary.json
+        quotaSummaryPath: join(dataPath, 'no-quota.json'),
+        limit: 8,
+        maxChars: 900,
+        order: 690,
+        ...config,
+      } as never));
       return applied;
     },
     command(name: string): CapturedCommand {

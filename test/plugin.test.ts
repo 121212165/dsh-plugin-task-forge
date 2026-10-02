@@ -7,8 +7,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, writeFileSync } from 'node:fs';import { join } from 'node:path';
 
 import { makeHarness, fire, fireOk, type Harness } from './harness.ts';
 import { parseTaskMarkdown } from '../src/taskbook.ts';
@@ -480,4 +479,45 @@ test('forge_write presents a card that names the task and the file it touches', 
   // a refusal must not wear a green title
   const refused = tool.presentResult!({ task_id: id }, '字段没过校验，未落盘：\n- acceptance 不能为空');
   assert.equal(refused.title, '✗ 任务书字段没过校验');
+});
+
+test('/relay warns when quota says the budget is already hot', async () => {
+  const hot = {
+    updatedAt: new Date().toISOString(),
+    currency: 'CNY',
+    budgetTokens: 100_000,
+    maxSessionTokens: 85_000,
+    maxSessionRatio: 0.85,
+    nextTurnEstTokens: 30_000,
+    todayTokens: 90_000,
+    todayCostMicros: 12_345,
+    sessions: 1,
+  };
+
+  const harness = makeHarness();
+  const summaryPath = join(harness.dataPath, 'summary.json');
+  writeFileSync(summaryPath, JSON.stringify(hot), 'utf8');
+  await harness.apply({ dataPath: harness.dataPath, quotaSummaryPath: summaryPath });
+
+  const id = /任务 id: (\d{8}-[a-z0-9]{4})/.exec(fireOk(harness, 'forge', '跑一轮全量回归'))![1]!;
+  const text = fireOk(harness, 'relay', `${id} --to 窗口A`);
+  assert.ok(text.includes('⚠ 预算已用 85%'), text);
+  assert.ok(text.includes('收到回读后'), text);
+  assert.ok(text.indexOf('交接包已导出') < text.indexOf('⚠'), 'the warning comes after the handoff, not instead of it');
+
+  // a cold meter, a stale file, and no file at all all say nothing
+  fireOk(harness, 'relay', `${id} --to 窗口B`);
+  writeFileSync(summaryPath, JSON.stringify({ ...hot, maxSessionRatio: 0.2, maxSessionTokens: 20_000 }), 'utf8');
+  assert.ok(!fireOk(harness, 'relay', `${id} --to 窗口C`).includes('预算'));
+  writeFileSync(summaryPath, JSON.stringify({ ...hot, updatedAt: '2026-01-01T00:00:00.000Z' }), 'utf8');
+  assert.ok(!fireOk(harness, 'relay', `${id} --to 窗口D`).includes('预算'), 'stale readings are not this session\'s');
+  writeFileSync(summaryPath, '{ half-written', 'utf8');
+  assert.ok(!fireOk(harness, 'relay', `${id} --to 窗口E`).includes('预算'));
+
+  const missing = makeHarness();
+  await missing.apply({ dataPath: missing.dataPath, quotaSummaryPath: join(missing.dataPath, 'never-written.json') });
+  const otherId = /任务 id: (\d{8}-[a-z0-9]{4})/.exec(fireOk(missing, 'forge', '没有 quota 也要能交接'))![1]!;
+  const quiet = fireOk(missing, 'relay', `${otherId} --to 窗口A`);
+  assert.ok(quiet.includes('交接包已导出'), quiet);
+  assert.ok(!quiet.includes('预算'), quiet);
 });

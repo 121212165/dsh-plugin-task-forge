@@ -38,6 +38,7 @@ import {
 import { isStaleVersion, needsSenderInput, parseHandshake, renderAckReply } from './handshake.ts';
 import { eventLine, foldStates, parseLedger, renderForgeList, renderSection, type TaskDetail } from './ledger.ts';
 import { IDE_TARGETS, hubReferencePath, ideTargetFor, parseIdeTarget, renderIdeRelayNote } from './ide-targets.ts';
+import { DEFAULT_SUMMARY_PATH, budgetWarningLine, parseQuotaSummary } from './quota-contract.ts';
 
 export const name = 'task-forge';
 export const inject = ['commands', 'tools', 'systemPrompt', 'llm', 'agents'];
@@ -47,6 +48,8 @@ export interface Config {
   dataPath?: string;
   /** where a `--to ide:*` copy lands, relative to the session cwd */
   hubPath: string;
+  /** quota's published budget contract, read before handing work to another window */
+  quotaSummaryPath: string;
   limit: number;
   maxChars: number;
   order: number;
@@ -56,6 +59,7 @@ export const Config = Schema.object({
   enabled: Schema.boolean().default(true),
   dataPath: Schema.string(),
   hubPath: Schema.string().default('.hub'),
+  quotaSummaryPath: Schema.string().default(DEFAULT_SUMMARY_PATH),
   limit: Schema.natural().default(8),
   maxChars: Schema.natural().default(900),
   order: Schema.number().default(690),
@@ -137,12 +141,26 @@ export function apply(ctx: Context, config: Config): void {
   if (typeof config.hubPath !== 'string' || !config.hubPath.trim() || config.hubPath.includes('\n')) {
     throw new TypeError('task-forge: hubPath must be a single-line relative directory');
   }
+  if (typeof config.quotaSummaryPath !== 'string' || !config.quotaSummaryPath.trim() || config.quotaSummaryPath.includes('\n')) {
+    throw new TypeError('task-forge: quotaSummaryPath must be a single-line file path');
+  }
 
   const store = new ForgeStore(config.dataPath);
 
   const taskById = (raw: string): { id: string } | { error: string } => {
     const id = raw.trim().replace(/^#/, '').split(/\s+/)[0] ?? '';
     return existsSync(store.taskPath(id)) ? { id } : { error: id };
+  };
+
+  /** quota publishes its meter; a missing or unreadable file simply means no warning. */
+  const quotaSummary = () => {
+    const path = expandHome(config.quotaSummaryPath);
+    if (!existsSync(path)) return null;
+    try {
+      return parseQuotaSummary(readFileSync(path, 'utf8'));
+    } catch {
+      return null;
+    }
   };
 
   /** Compile instructions ride followup when a live session exists; headless
@@ -254,6 +272,8 @@ export function apply(ctx: Context, config: Config): void {
         lines.push(`把该文件全文粘贴给「${target}」窗口的 AI。对方必须按文内握手指令先回读（复述+缺口+STATUS），STATUS: READY 之前不会开工。`);
       }
       lines.push(`收到回读后：/ack ${task.id}${toMatch ? ` --to ${target}` : ''} <粘贴回读内容>`);
+      const warning = budgetWarningLine(quotaSummary());
+      if (warning) lines.push(warning);
       return { kind: 'success', text: lines.join('\n') };
     },
   });

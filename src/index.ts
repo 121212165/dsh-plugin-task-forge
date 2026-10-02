@@ -35,6 +35,14 @@ export {
 export { parseHandshake, isStaleVersion, needsSenderInput, renderAckReply, type Handshake, type HandshakeStatus } from './handshake.ts';
 export { IDE_TARGETS, ideTargetFor, parseIdeTarget, hubReferencePath, renderIdeRelayNote, type IdeTarget } from './ide-targets.ts';
 export {
+  BUDGET_WARN_RATIO,
+  DEFAULT_SUMMARY_PATH,
+  SUMMARY_MAX_AGE_MS,
+  budgetWarningLine,
+  parseQuotaSummary,
+  type QuotaSummary,
+} from './quota-contract.ts';
+export {
   parseLine,
   parseLedger,
   eventLine,

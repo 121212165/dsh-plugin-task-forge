@@ -72,6 +72,7 @@ STATUS: READY 或 STATUS: NEED-INPUT
 | `enabled` | `true` | 关掉后 apply 直接返回，不注册任何命令/工具/注入 |
 | `dataPath` | `~/.dsh/task-forge` | 任务书本体、交接包与台账的根目录；支持 `~` 前缀 |
 | `hubPath` | `.hub` | `--to ide:<工具名>` 那份项目内副本的目录，相对当前工作目录解析（写绝对路径也可以） |
+| `quotaSummaryPath` | `~/.dsh/quota/summary.json` | quota 发布的预算契约文件；读不到就当没装 quota，不警告也不报错。支持 `~` 前缀 |
 | `limit` / `maxChars` | `8` / `900` | 注入段的条数与字符预算；超限的行截断而不是丢弃最新任务 |
 | `order` | `690` | 注入段在系统提示里的排序位置 |
 
@@ -104,7 +105,7 @@ npm run check   # typecheck + node --test + tsc build
 v0.2 已落地：interview 多轮闭环（答完最后一问自动重编译）、`--to ide:<工具名>` 派发（落项目内副本 + 逐 IDE 接手步骤）、每窗口回读台账（`✓当前版 / ◐旧版 / ○未回读`）、`forge_write` 的 presentCall/presentResult 卡片。
 
 - IDE 侧仍是**人工接手一步**：真自动注入等 ide-hub 的指针生成器（`/hub-init`）上线后接上；
-- `/relay` 会读 quota 的 `totals.json`，超预算时提前警告（跨插件文件契约，进行中）；
+- `/relay` 会读 quota 的 `summary.json`（家族契约：`budgetTokens`/`maxSessionRatio`/`nextTurnEstTokens`），预算已用到 80% 以上时在交接输出里追加一行警告；quota 没装、文件坏、或读数是**一小时以前**的都保持沉默——拿昨天的仪表吓人是更糟的结果；
 - 超长输入的非拦截"建议编译"提醒；
 - `ctx.agents.followup()` 的运行时验证仍在观察（headless 无活动会话时走粘贴回退，已在测试里覆盖）。
 

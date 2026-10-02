@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-task-forge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "dsh plugin: compile a rough need into a versioned open-source-style task book, relay it to any AI window, and make the handoff lossless with a read-back handshake; /forge /relay /ack /answer /forge-list.",
   "type": "module",
   "license": "MIT",
