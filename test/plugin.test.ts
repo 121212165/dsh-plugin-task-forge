@@ -288,8 +288,10 @@ test('/forge-list renders the ledger, /forge-done retires tasks from injection',
   fireOk(harness, 'relay', `${id} --to 窗口B`);
 
   const list = fire(harness, 'forge-list').text;
-  assert.ok(list.includes(`${id}@v1 [relayed]`));
-  assert.ok(list.includes('窗口B'));
+  assert.ok(list.includes(`${id}@v1`));
+  assert.ok(list.includes('[待回读]'));
+  assert.ok(list.includes('交接: 窗口B'));
+  assert.ok(list.includes('▸ 等接收方回读'));
 
   // the prompt section shows the live task
   assert.ok(harness.sectionText().includes(id));
@@ -302,5 +304,5 @@ test('/forge-list renders the ledger, /forge-done retires tasks from injection',
   assert.equal(store.loadTask(id)!.status, 'done');
   // done tasks drop out of the section but stay visible in the ledger view
   assert.ok(!harness.sectionText().includes(id));
-  assert.ok(fire(harness, 'forge-list').text.includes('[done]'));
+  assert.ok(fire(harness, 'forge-list').text.includes('[已完成]'));
 });

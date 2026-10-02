@@ -3,6 +3,8 @@
  * version of which task" — the system-prompt section reads it live, so a
  * relay or ack lands in every future session without restarts. */
 
+import { STATUS_LABEL, type TaskStatus } from './taskbook.ts';
+
 export type LedgerEventKind = 'created' | 'revised' | 'relayed' | 'acked' | 'gap-resolved' | 'done';
 
 export interface LedgerEvent {
@@ -24,6 +26,10 @@ export interface TaskState {
   targets: string[];
   lastAt: string;
   events: number;
+  /** handshake tallies folded from acked events */
+  acksReady: number;
+  acksGap: number;
+  lastNote?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -66,8 +72,8 @@ export function eventLine(event: LedgerEvent): string {
   return JSON.stringify(clean);
 }
 
-/** Later events win; targets accumulate across relay/ack; title sticks from
- * whichever event last carried one. Fold order = file order. */
+/** Later events win; targets accumulate across relay/ack; ack tallies fold
+ * from event notes; title sticks from whichever event last carried one. */
 export function foldStates(events: LedgerEvent[]): TaskState[] {
   const states = new Map<string, TaskState>();
   for (const event of events) {
@@ -79,29 +85,99 @@ export function foldStates(events: LedgerEvent[]): TaskState[] {
       targets: [],
       lastAt: event.ts,
       events: 0,
+      acksReady: 0,
+      acksGap: 0,
     };
     current.events += 1;
     current.lastAt = event.ts;
     if (typeof event.version === 'number') current.version = event.version;
     if (event.status) current.status = event.status;
     if (event.title) current.title = event.title;
+    if (event.note) current.lastNote = event.note;
     if (event.target && (event.event === 'relayed' || event.event === 'acked') && !current.targets.includes(event.target)) {
       current.targets.push(event.target);
+    }
+    if (event.event === 'acked') {
+      if (event.status === 'ready') current.acksReady += 1;
+      else if (/need-input|stale/i.test(event.note ?? '')) current.acksGap += 1;
     }
     states.set(event.task, current);
   }
   return [...states.values()].sort((a, b) => (a.lastAt === b.lastAt ? (a.id < b.id ? 1 : -1) : a.lastAt < b.lastAt ? 1 : -1));
 }
 
-export function renderForgeList(states: TaskState[], skipped = 0): string {
+/** Compact relative time for the ledger view ("刚刚", "3 小时前", "2 天前"). */
+export function relativeTime(ts: string, now: Date = new Date()): string {
+  const then = Date.parse(ts);
+  if (!Number.isFinite(then)) return '时间未知';
+  const diff = now.getTime() - then;
+  if (diff < 60_000) return '刚刚';
+  const minutes = Math.floor(diff / 60_000);
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  return `${Math.floor(hours / 24)} 天前`;
+}
+
+/** The one action that moves this task forward, by protocol position. */
+export function nextStepHint(status: string, acksGap: number): string {
+  switch (status) {
+    case 'draft':
+      return '等模型编译（forge_write），或直接 /relay 导出草稿';
+    case 'relayed':
+      return acksGap > 0
+        ? '有回读待补缺口：/answer 逐条回答，答完重新 /relay 新版'
+        : '等接收方回读；把回读全文交给 /ack';
+    case 'ready':
+      return '可以让它开工；引用任务一定带 id@version';
+    case 'in-progress':
+      return '干完 /forge-done 收档';
+    case 'done':
+      return '已归档';
+    default:
+      return '';
+  }
+}
+
+/** Per-task facts that live in the task book, not the ledger. */
+export interface TaskDetail {
+  mode?: string;
+  gaps: number;
+  decisions: number;
+  missing?: boolean;
+}
+
+export function renderForgeList(states: TaskState[], skipped = 0, details: Map<string, TaskDetail> = new Map()): string {
   if (!states.length) return '任务台账是空的。/forge <大白话需求> 编译第一个任务书。';
-  const lines = states.map((state) => {
-    const targets = state.targets.length ? ` → 已交接: ${state.targets.join(', ')}` : '';
-    return `  ${state.id}@v${state.version} [${state.status}] ${state.title || '（未命名）'}${targets}`;
-  });
-  const summary = `任务台账 ${states.length} 个 · 最近活动 ${states[0]!.lastAt.slice(0, 16).replace('T', ' ')}`;
-  const hint = skipped ? `\n⚠ ${skipped} 行台账损坏被跳过` : '';
-  return [summary, ...lines].join('\n') + hint;
+  const summaryParts: string[] = [];
+  for (const status of ['draft', 'relayed', 'ready', 'in-progress', 'done'] as const) {
+    const n = states.filter((state) => state.status === status).length;
+    if (n > 0) summaryParts.push(`${STATUS_LABEL[status]} ${n}`);
+  }
+  const lines = [`任务台账 ${states.length} 个 · ${summaryParts.join(' · ')}`];
+  for (const state of states) {
+    const mark = STATUS_MARK[state.status] ?? '○';
+    lines.push(`  ${mark} ${state.id}@v${state.version} [${STATUS_LABEL[state.status as TaskStatus] ?? state.status}] ${state.title || '（未命名）'}`);
+    const facts: string[] = [relativeTime(state.lastAt)];
+    const detail = details.get(state.id);
+    if (detail?.mode) facts.push(detail.mode === 'interview' ? 'interview' : 'auto');
+    if (state.acksReady) facts.push(`回读通过 ${state.acksReady} 次`);
+    if (state.acksGap) facts.push(`待补缺口 ${state.acksGap} 次`);
+    if (detail) {
+      if (detail.missing) facts.push('⚠ 任务书文件缺失');
+      else {
+        if (detail.gaps) facts.push(`缺口 ${detail.gaps}`);
+        if (detail.decisions) facts.push(`决策 ${detail.decisions}`);
+      }
+    }
+    if (state.targets.length) facts.push(`交接: ${state.targets.join(', ')}`);
+    if (state.status === 'draft' && state.lastNote) facts.push(state.lastNote);
+    lines.push('      ' + facts.join(' · '));
+    const hint = nextStepHint(state.status, state.acksGap);
+    if (hint) lines.push(`      ▸ ${hint}`);
+  }
+  if (skipped) lines.push(`⚠ ${skipped} 行台账损坏被跳过`);
+  return lines.join('\n');
 }
 
 export interface SectionBudget {

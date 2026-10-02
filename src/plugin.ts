@@ -29,7 +29,7 @@ import {
   type TaskBook,
 } from './taskbook.ts';
 import { isStaleVersion, needsSenderInput, parseHandshake, renderAckReply } from './handshake.ts';
-import { eventLine, foldStates, parseLedger, renderForgeList, renderSection } from './ledger.ts';
+import { eventLine, foldStates, parseLedger, renderForgeList, renderSection, type TaskDetail } from './ledger.ts';
 
 export const name = 'task-forge';
 export const inject = ['commands', 'tools', 'systemPrompt', 'llm', 'agents'];
@@ -304,10 +304,25 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.commands.register({
     name: 'forge-list',
-    description: '任务台账总览：任务 × 版本 × 交接窗口 × 状态',
+    description: '任务台账总览：状态/握手进度/缺口与决策计数/下一步动作',
     handler: () => {
       const { events, skipped } = store.loadStates();
-      return { kind: 'success', text: renderForgeList(foldStates(events), skipped) };
+      const states = foldStates(events);
+      const details = new Map<string, TaskDetail>();
+      for (const state of states) {
+        try {
+          const task = store.loadTask(state.id);
+          if (!task) continue;
+          details.set(state.id, {
+            mode: task.mode,
+            gaps: task.open.split(/\r?\n/).filter((line) => /^\s*Q\d+(?=$|[\s:：.)、])/.test(line)).length,
+            decisions: task.decisions.split(/\r?\n/).filter((line) => /^\s*D\d+(?=$|[\s:：.)、])/.test(line)).length,
+          });
+        } catch {
+          details.set(state.id, { gaps: 0, decisions: 0, missing: true });
+        }
+      }
+      return { kind: 'success', text: renderForgeList(states, skipped, details) };
     },
   });
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseLine, parseLedger, eventLine, foldStates, renderForgeList, renderSection, type LedgerEvent } from '../src/ledger.ts';
+import { parseLine, parseLedger, eventLine, foldStates, renderForgeList, renderSection, relativeTime, nextStepHint, type LedgerEvent } from '../src/ledger.ts';
 
 let seq = 0;
 const ev = (over: Partial<LedgerEvent>): LedgerEvent => {
@@ -56,13 +56,52 @@ test('foldStates keeps unrelated tasks separate and sorts by most recent activit
   );
 });
 
-test('renderForgeList shows id@version, status and targets; empty ledger teaches the command', () => {
+test('renderForgeList shows id@version, Chinese status and targets; empty ledger teaches the command', () => {
   assert.ok(renderForgeList([]).includes('/forge'));
   const text = renderForgeList(foldStates(history));
-  assert.ok(text.includes('20261001-a3f2@v2 [ready]'));
-  assert.ok(text.includes('已交接: 窗口A, plugtest'));
+  assert.ok(text.includes('20261001-a3f2@v2 [回读通过]'));
+  assert.ok(text.includes('交接: 窗口A, plugtest'));
+  assert.ok(text.includes('回读通过 1 次')); // acked-ready tallied from the note
+  assert.ok(text.includes('待补缺口 1 次')); // acked-need-input tallied from the note
+  assert.ok(text.includes('▸ 让它开工') === false);
   const skipped = renderForgeList(foldStates(history), 3);
   assert.ok(skipped.includes('3 行台账损坏'));
+});
+
+test('renderForgeList enriches with details, relative time, counts and next-step hints', () => {
+  const states = foldStates(history);
+  const now = new Date(history[5]!.ts);
+  const details = new Map([['20261001-a3f2', { mode: 'auto', gaps: 1, decisions: 5 }]]);
+  const text = renderForgeList(states, 0, details).replaceAll('刚刚', relativeTime(history[5]!.ts, now));
+  assert.ok(text.includes('auto'), text);
+  assert.ok(text.includes('缺口 1'));
+  assert.ok(text.includes('决策 5'));
+  assert.ok(text.includes('▸ 可以让它开工'));
+  assert.ok(text.includes('任务台账 1 个 ·')); // summary with per-status counts
+  assert.ok(text.includes('草稿 1') === false); // ready-only: no draft count
+  // missing task book flags itself instead of dying
+  const broken = new Map([['20261001-a3f2', { gaps: 0, decisions: 0, missing: true }]]);
+  assert.ok(renderForgeList(states, 0, broken).includes('任务书文件缺失'));
+  // a draft points at compile/relay; a relayed task with gaps points at /answer
+  const draftStates = foldStates([ev({ event: 'created', version: 1, status: 'draft', title: '新任务' })]);
+  assert.ok(renderForgeList(draftStates).includes('forge_write'));
+  const gapStates = foldStates([
+    ev({ event: 'created', version: 1, status: 'draft', title: 'x' }),
+    ev({ event: 'relayed', version: 1, status: 'relayed', target: 'w' }),
+    ev({ event: 'acked', version: 1, status: 'relayed', note: 'need-input · 缺口 2 条' }),
+  ]);
+  assert.ok(renderForgeList(gapStates).includes('/answer'));
+});
+
+test('relativeTime buckets seconds/minutes/hours/days; nextStepHint covers statuses', () => {
+  const now = new Date('2026-10-02T12:00:00Z');
+  assert.equal(relativeTime('2026-10-02T11:59:40Z', now), '刚刚');
+  assert.equal(relativeTime('2026-10-02T11:30:00Z', now), '30 分钟前');
+  assert.equal(relativeTime('2026-10-02T06:00:00Z', now), '6 小时前');
+  assert.equal(relativeTime('2026-09-30T06:00:00Z', now), '2 天前');
+  assert.equal(relativeTime('garbage', now), '时间未知');
+  assert.ok(nextStepHint('done', 0).includes('归档'));
+  assert.ok(nextStepHint('draft', 0).includes('forge_write'));
 });
 
 test('renderSection: done tasks drop out, live tasks show with marks and budget caps', () => {

@@ -28,8 +28,11 @@ export {
   foldStates,
   renderForgeList,
   renderSection,
+  relativeTime,
+  nextStepHint,
   type LedgerEvent,
   type LedgerEventKind,
   type TaskState,
+  type TaskDetail,
   type SectionBudget,
 } from './ledger.ts';
