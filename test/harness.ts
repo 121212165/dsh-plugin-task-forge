@@ -109,6 +109,8 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
         hubPath: join(dataPath, 'hub'),
         // never let a test read the real ~/.dsh/quota/summary.json
         quotaSummaryPath: join(dataPath, 'no-quota.json'),
+        // ...or the real ~/.dsh/quota/history.json
+        quotaHistoryPath: join(dataPath, 'no-history.json'),
         limit: 8,
         maxChars: 900,
         order: 690,

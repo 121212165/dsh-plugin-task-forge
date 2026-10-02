@@ -33,11 +33,20 @@ dsh plugin --profile web add github:121212165/dsh-plugin-task-forge
 | 命令 | 作用 |
 |---|---|
 | `/forge <需求> [--mode interview]` | 编译。默认 auto：模型自己推演、暴露假设，定不了的写成编号缺口 Q1/Q2…；`--mode interview` 先出问题清单等你答完再编译。编译结果经 `forge_write` 工具落盘 |
-| `/relay <id> [--to <窗口名>\|ide:<工具名>]` | 导出交接包到 `~/.dsh/task-forge/outbox/<id>-v<n>.md`，全文粘贴给对方窗口；`--to ide:zcode` 这类还会在当前项目 `<hubPath>/tasks/` 落一份同字节副本，并打印该 IDE 的接手步骤 |
+| `/relay <id> [--to <窗口名>\|ide:<工具名>]` | 导出交接包到 `~/.dsh/task-forge/outbox/<id>-v<n>.md`，全文粘贴给对方窗口；`--to ide:zcode` 这类还会在当前项目 `<hubPath>/tasks/` 落一份同字节副本，并打印该 IDE 的接手步骤。输出还带**这份任务书预计烧多少 token**（见下） |
 | `/ack <id> [--to <窗口名>] <回读全文>` | 登记对方回读：READY 放行并给该窗口盖上「确认了哪一版」；NEED-INPUT 的缺口自动登记进任务书。有多个窗口时必须带 `--to`，否则不知道该记在谁头上 |
 | `/answer <id> <Q编号> <答案>` | 缺口答案写入已定决策（D 编号），版本 +1，提醒你重新 relay 新版；**interview 任务答完最后一个 Q 会自动重新注入编译指令**，不用你二次触发 |
 | `/forge-list` | 台账：任务 × 版本 × 每个窗口的回读状态（`窗口A✓v2 / 窗口B◐v1 / 窗口C○`）× 缺口/决策计数 × 下一步 |
 | `/forge-done <id>` | 标记完成（不再注入系统提示） |
+
+## 单任务 token 预估
+
+派发之前先知道这一趟要烧多少。口径在 `src/task-cost.ts`（纯函数，同输入同输出）：
+
+- **分相**：`编译`（任务书自身 token）+ `回读`（有观测就取各步 output 的中位数，没有就按任务书字数的 40%）+ `交接`（任务书 × 持有窗口数，每窗口都要重发一遍全文）+ `执行`（唯一给区间的一段：有观测按中位步长 × 6–20 步，没有就按任务书规模 × 8–18 倍）；
+- **基数分两种，输出里写明是哪种**：`基于 3 步观测` 或 `按字数启发式估算（无观测）`——`tokens ≈ 字数 / 2.4` 是混合中英文的近似，**不是分词器**，别拿这个数去跟厂商对账；
+- **钱只在有真实价目时出现**：单价从 quota 自己的仪表里取（`todayCostMicros / todayTokens` 的混合单价），拿不到就只报 token，不编价格；
+- `/forge-list` 每个任务多一行 `预估 99k–232k`。
 
 ## 回读握手协议（无损的全部保障）
 
@@ -73,10 +82,11 @@ STATUS: READY 或 STATUS: NEED-INPUT
 | `dataPath` | `~/.dsh/task-forge` | 任务书本体、交接包与台账的根目录；支持 `~` 前缀 |
 | `hubPath` | `.hub` | `--to ide:<工具名>` 那份项目内副本的目录，相对当前工作目录解析（写绝对路径也可以） |
 | `quotaSummaryPath` | `~/.dsh/quota/summary.json` | quota 发布的预算契约文件；读不到就当没装 quota，不警告也不报错。支持 `~` 前缀 |
+| `quotaHistoryPath` | `~/.dsh/quota/history.json` | quota 的每步用量历史（`{sessionId: [{input,output,cacheRead}]}`），**单任务预估**的观测基数；读不到就退回按字数的启发式并在输出里明说 |
 | `limit` / `maxChars` | `8` / `900` | 注入段的条数与字符预算；超限的行截断而不是丢弃最新任务 |
 | `order` | `690` | 注入段在系统提示里的排序位置 |
 
-`limit`、`maxChars`、`order`、`hubPath` 都走启动自检：填错**启动即失败并点名 task-forge**，不会带着一个不可用的台账静默运行。
+`limit`、`maxChars`、`order`、`hubPath`、`quotaHistoryPath` 都走启动自检：填错**启动即失败并点名 task-forge**，不会带着一个不可用的台账静默运行。
 
 ## 借鉴来源与差异（不盲目抄）
 
@@ -95,10 +105,10 @@ STATUS: READY 或 STATUS: NEED-INPUT
 npm run check   # typecheck + node --test + tsc build
 ```
 
-61 个测试，两层：
+82 个测试，两层：
 
-- **纯函数层（38）**：任务书校验/版本推进/缺口应答、frontmatter 里每个窗口的回读版本（旧格式纯字符串照常解析）、interview 相位（`phase`）落盘与清除、答复被编译器丢掉时自动补回、握手解析（中文冒号/旧版本/结构残缺/空缺口/自作主张的 READY 降级）、台账解析/折叠/注入预算、IDE 派发表；
-- **装配层（23，`test/harness.ts` + `test/plugin.test.ts`）**：真实 `apply()` 挂到脚本化 mock ctx 上（命令/工具/注入/followup 全部捕获），在真临时目录里驱动完整协议流——`/forge` 落盘并注入编译指令（含 headless 粘贴回退）、`forge_write` 校验拒绝、interview 出问题清单 → `/answer` 答完最后一问**自动二次注入编译**、`/relay` 导出交接包与 `--to ide:*` 的项目内同字节副本、`/ack` 垃圾输入拒绝/READY 放行/降级/旧版本拦截/每窗口盖章、`/answer` 版本推进与缺口编号不复用、`/forge-list` 的每窗口状态、`forge_write` 的 presentCall/presentResult 卡片、坏配置启动点名。全家第一个有装配层覆盖的插件，harness 可直接复制给其他 17 个。
+- **纯函数层（53）**：单任务预估的分相、中位数斜率、无观测降级、窗口倍数、坏 history 容错；任务书校验/版本推进/缺口应答、frontmatter 里每个窗口的回读版本（旧格式纯字符串照常解析）、interview 相位（`phase`）落盘与清除、答复被编译器丢掉时自动补回、握手解析（中文冒号/旧版本/结构残缺/空缺口/自作主张的 READY 降级）、台账解析/折叠/注入预算、IDE 派发表；
+- **装配层（29，`test/harness.ts` + `test/plugin.test.ts`）**：真实 `apply()` 挂到脚本化 mock ctx 上（命令/工具/注入/followup 全部捕获），在真临时目录里驱动完整协议流——`/forge` 落盘并注入编译指令（含 headless 粘贴回退）、`forge_write` 校验拒绝、interview 出问题清单 → `/answer` 答完最后一问**自动二次注入编译**、`/relay` 导出交接包与 `--to ide:*` 的项目内同字节副本、`/ack` 垃圾输入拒绝/READY 放行/降级/旧版本拦截/每窗口盖章、`/answer` 版本推进与缺口编号不复用、`/forge-list` 的每窗口状态、`forge_write` 的 presentCall/presentResult 卡片、坏配置启动点名。全家第一个有装配层覆盖的插件，harness 可直接复制给其他 17 个。
 
 ## 已做到 / 下一步
 

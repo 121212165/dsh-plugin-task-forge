@@ -43,6 +43,18 @@ export {
   type QuotaSummary,
 } from './quota-contract.ts';
 export {
+  CHARS_PER_TOKEN,
+  DEFAULT_HISTORY_PATH,
+  estimateTaskCost,
+  parseHistory,
+  renderCostCompact,
+  renderCostLine,
+  type EstimateInput,
+  type PriceInput,
+  type StepUsage,
+  type TaskCost,
+} from './task-cost.ts';
+export {
   parseLine,
   parseLedger,
   eventLine,

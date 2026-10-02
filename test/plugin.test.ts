@@ -521,3 +521,80 @@ test('/relay warns when quota says the budget is already hot', async () => {
   assert.ok(quiet.includes('交接包已导出'), quiet);
   assert.ok(!quiet.includes('预算'), quiet);
 });
+
+test('/relay prints a token-cost estimate line after the handoff lines', async () => {
+  const harness = makeHarness();
+  await harness.apply({ dataPath: harness.dataPath, quotaHistoryPath: join(harness.dataPath, 'absent-history.json') });
+  const id = /任务 id: (\d{8}-[a-z0-9]{4})/.exec(fireOk(harness, 'forge', '给插件加设置面板'))![1]!;
+
+  const text = fireOk(harness, 'relay', `${id} --to 窗口A`);
+  const line = text.split('\n').find((candidate) => candidate.includes('预计烧'));
+  assert.ok(line, text);
+  assert.ok(line!.includes('tok（编译'), line);
+  assert.ok(text.indexOf('收到回读后') < text.indexOf('预计烧'), 'the estimate comes after the handoff lines');
+
+  // no history yet: honest degradation, the line says it is a heuristic, not a measurement
+  assert.ok(line!.includes('启发式'), line);
+  assert.ok(line!.includes('无观测'), line);
+});
+
+test('quota history grounds the estimate and it still sits before the budget warning', async () => {
+  const harness = makeHarness();
+  const historyPath = join(harness.dataPath, 'history.json');
+  writeFileSync(historyPath, JSON.stringify({
+    s1: [
+      { input: 1000, output: 5000, cacheRead: 0 },
+      { input: 2000, output: 7000, cacheRead: 1000 },
+      { input: 500, output: 9000, cacheRead: 0 },
+    ],
+  }), 'utf8');
+  const summaryPath = join(harness.dataPath, 'summary.json');
+  writeFileSync(summaryPath, JSON.stringify({
+    updatedAt: new Date().toISOString(), currency: 'CNY', budgetTokens: 100_000, maxSessionTokens: 85_000,
+    maxSessionRatio: 0.85, nextTurnEstTokens: 30_000, todayTokens: 90_000, todayCostMicros: 12_345, sessions: 1,
+  }), 'utf8');
+  await harness.apply({ dataPath: harness.dataPath, quotaHistoryPath: historyPath, quotaSummaryPath: summaryPath });
+  const id = /任务 id: (\d{8}-[a-z0-9]{4})/.exec(fireOk(harness, 'forge', '跑一轮全量回归'))![1]!;
+
+  const text = fireOk(harness, 'relay', `${id} --to 窗口A`);
+  assert.ok(text.includes('基于 3 步观测'), text);
+  assert.ok(!text.split('\n').some((candidate) => candidate.includes('启发式')), 'observed history is not labelled heuristic');
+  assert.ok(text.indexOf('预计烧') < text.indexOf('⚠'), 'estimate before the budget warning');
+});
+
+test('a corrupt history file changes only the wording, never the command result', async () => {
+  const harness = makeHarness();
+  const historyPath = join(harness.dataPath, 'history.json');
+  writeFileSync(historyPath, '{ half-written', 'utf8');
+  await harness.apply({ dataPath: harness.dataPath, quotaHistoryPath: historyPath });
+  const id = /任务 id: (\d{8}-[a-z0-9]{4})/.exec(fireOk(harness, 'forge', '写周报机器人'))![1]!;
+
+  const relay = fire(harness, 'relay', `${id} --to 窗口A`);
+  assert.equal(relay.kind, 'success', 'half-written history cannot crash the handoff');
+  assert.ok(relay.text.includes('无观测'), relay.text);
+
+  // garbage that parses but carries no usable steps behaves the same
+  writeFileSync(historyPath, JSON.stringify({ s1: 'not an array', s2: [{ input: -1, output: 2, cacheRead: 0 }] }), 'utf8');
+  const again = fire(harness, 'relay', `${id} --to 窗口B`);
+  assert.equal(again.kind, 'success');
+  assert.ok(again.text.includes('启发式'), again.text);
+});
+
+test('/forge-list shows a compact cost estimate per task', async () => {
+  const harness = await mounted();
+  const id = await forged(harness, '重建计费子系统'.repeat(160));
+  fireOk(harness, 'relay', `${id} --to 窗口A`);
+  const list = fire(harness, 'forge-list').text;
+  assert.match(list, /预估 \d+(?:\.\d+)?k–\d+(?:\.\d+)?k/, list);
+});
+
+test('a bad quotaHistoryPath fails startup naming task-forge', async () => {
+  for (const bad of ['', '   ', 'has\nnewline']) {
+    const harness = makeHarness();
+    await assert.rejects(harness.apply({ quotaHistoryPath: bad }), (error: Error) => {
+      assert.match(String(error), /task-forge/);
+      assert.match(String(error), /quotaHistoryPath/);
+      return true;
+    });
+  }
+});

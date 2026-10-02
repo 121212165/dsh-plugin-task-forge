@@ -39,6 +39,7 @@ import { isStaleVersion, needsSenderInput, parseHandshake, renderAckReply } from
 import { eventLine, foldStates, parseLedger, renderForgeList, renderSection, type TaskDetail } from './ledger.ts';
 import { IDE_TARGETS, hubReferencePath, ideTargetFor, parseIdeTarget, renderIdeRelayNote } from './ide-targets.ts';
 import { DEFAULT_SUMMARY_PATH, budgetWarningLine, parseQuotaSummary } from './quota-contract.ts';
+import { DEFAULT_HISTORY_PATH, estimateTaskCost, parseHistory, renderCostCompact, renderCostLine, type PriceInput, type StepUsage } from './task-cost.ts';
 
 export const name = 'task-forge';
 export const inject = ['commands', 'tools', 'systemPrompt', 'llm', 'agents'];
@@ -50,6 +51,8 @@ export interface Config {
   hubPath: string;
   /** quota's published budget contract, read before handing work to another window */
   quotaSummaryPath: string;
+  /** quota's published per-step history, read to ground the task cost estimate */
+  quotaHistoryPath: string;
   limit: number;
   maxChars: number;
   order: number;
@@ -60,6 +63,7 @@ export const Config = Schema.object({
   dataPath: Schema.string(),
   hubPath: Schema.string().default('.hub'),
   quotaSummaryPath: Schema.string().default(DEFAULT_SUMMARY_PATH),
+  quotaHistoryPath: Schema.string().default(DEFAULT_HISTORY_PATH),
   limit: Schema.natural().default(8),
   maxChars: Schema.natural().default(900),
   order: Schema.number().default(690),
@@ -144,6 +148,9 @@ export function apply(ctx: Context, config: Config): void {
   if (typeof config.quotaSummaryPath !== 'string' || !config.quotaSummaryPath.trim() || config.quotaSummaryPath.includes('\n')) {
     throw new TypeError('task-forge: quotaSummaryPath must be a single-line file path');
   }
+  if (typeof config.quotaHistoryPath !== 'string' || !config.quotaHistoryPath.trim() || config.quotaHistoryPath.includes('\n')) {
+    throw new TypeError('task-forge: quotaHistoryPath must be a single-line file path');
+  }
 
   const store = new ForgeStore(config.dataPath);
 
@@ -161,6 +168,25 @@ export function apply(ctx: Context, config: Config): void {
     } catch {
       return null;
     }
+  };
+
+  /** quota's per-step history grounds the cost estimate; unusable history just means
+   * the estimate falls back to the char-count heuristic. */
+  const quotaHistory = (): StepUsage[] => {
+    const path = expandHome(config.quotaHistoryPath);
+    if (!existsSync(path)) return [];
+    try {
+      return parseHistory(readFileSync(path, 'utf8'));
+    } catch {
+      return [];
+    }
+  };
+
+  /** blended price comes from quota's own meter; without a currency or a real
+   * cost-per-token there is no honest money figure, so we render tokens only. */
+  const costPrice = (summary: ReturnType<typeof quotaSummary>): PriceInput | null => {
+    if (!summary || !summary.currency || summary.todayTokens <= 0 || summary.todayCostMicros <= 0) return null;
+    return { currency: summary.currency, microsPerToken: summary.todayCostMicros / summary.todayTokens };
   };
 
   /** Compile instructions ride followup when a live session exists; headless
@@ -272,7 +298,9 @@ export function apply(ctx: Context, config: Config): void {
         lines.push(`把该文件全文粘贴给「${target}」窗口的 AI。对方必须按文内握手指令先回读（复述+缺口+STATUS），STATUS: READY 之前不会开工。`);
       }
       lines.push(`收到回读后：/ack ${task.id}${toMatch ? ` --to ${target}` : ''} <粘贴回读内容>`);
-      const warning = budgetWarningLine(quotaSummary());
+      const summary = quotaSummary();
+      lines.push(renderCostLine(estimateTaskCost({ text: markdown, windows: task.targets.length, steps: quotaHistory() }), costPrice(summary)));
+      const warning = budgetWarningLine(summary);
       if (warning) lines.push(warning);
       return { kind: 'success', text: lines.join('\n') };
     },
@@ -379,6 +407,9 @@ export function apply(ctx: Context, config: Config): void {
       const { events, skipped } = store.loadStates();
       const states = foldStates(events);
       const details = new Map<string, TaskDetail>();
+      const summary = quotaSummary();
+      const price = costPrice(summary);
+      const steps = quotaHistory();
       for (const state of states) {
         try {
           const task = store.loadTask(state.id);
@@ -388,6 +419,7 @@ export function apply(ctx: Context, config: Config): void {
             gaps: remainingGapIds(task.open).length,
             decisions: task.decisions.split(/\r?\n/).filter((line) => /^\s*D\d+(?=$|[\s:：.)、])/.test(line)).length,
             targets: task.targets,
+            cost: renderCostCompact(estimateTaskCost({ text: renderTaskMarkdown(task), windows: task.targets.length, steps })),
           });
         } catch {
           details.set(state.id, { gaps: 0, decisions: 0, missing: true });

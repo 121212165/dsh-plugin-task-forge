@@ -146,6 +146,8 @@ export interface TaskDetail {
   decisions: number;
   /** who holds the book and what version each of them read back */
   targets?: TaskTarget[];
+  /** compact token-cost estimate line, precomputed by the caller */
+  cost?: string;
   missing?: boolean;
 }
 
@@ -170,6 +172,7 @@ export function renderForgeList(states: TaskState[], skipped = 0, details: Map<s
       else {
         if (detail.gaps) facts.push(`缺口 ${detail.gaps}`);
         if (detail.decisions) facts.push(`决策 ${detail.decisions}`);
+        if (detail.cost) facts.push(detail.cost);
       }
     }
     // Per-window read-back comes from the task book; the ledger only knows names.
