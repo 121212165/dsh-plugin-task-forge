@@ -306,6 +306,25 @@ test('compile-pending tasks ride the system-prompt section until compiled', asyn
   assert.ok(!harness2.sectionText().includes('待编译任务'));
 });
 
+test('task references accept id prefixes and unique title substrings, not just exact ids', async () => {
+  const harness = await mounted();
+  const id = await forged(harness, '给 obsidian 写一个自动发布流水线');
+  const prefix = id.slice(0, 10);
+
+  // id prefix resolves
+  fireOk(harness, 'relay', `${prefix} --to 窗口P`);
+  assert.ok(harness.sectionText().includes(id) || fire(harness, 'forge-list').text.includes(id));
+
+  // unique title substring resolves ('自动发布' matches this task's title)
+  fireOk(harness, 'forge-done', '自动发布');
+  const store = await storeOf(harness);
+  assert.equal(store.loadTask(id)!.status, 'done');
+
+  // ambiguous and missing tokens fail with guidance
+  const missing = fire(harness, 'relay', '20990101-zzzz');
+  assert.equal(missing.kind, 'error');
+});
+
 test('/forge-list renders the ledger, /forge-done retires tasks from injection', async () => {
   const empty = await mounted();
   assert.ok(empty.command('forge-list').handler({}).text.includes('空的'));

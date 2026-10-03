@@ -12,7 +12,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { brandString } from '@deepseek-ai/dsh-brand';
 import type {} from '@deepseek-ai/dsh-commands';
 import type {} from '@deepseek-ai/dsh-system-prompt';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
@@ -114,6 +114,27 @@ export class ForgeStore {
     return parseLedger(readFileSync(this.ledgerPath, 'utf8'));
   }
 
+  /** Light inventory for fuzzy matching: id + title from every task book. */
+  listTasks(): Array<{ id: string; title: string }> {
+    const dir = join(this.root, 'tasks');
+    if (!existsSync(dir)) return [];
+    const out: Array<{ id: string; title: string }> = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const file = join(dir, entry.name, 'task.md');
+      if (!existsSync(file)) continue;
+      try {
+        const head = readFileSync(file, 'utf8').slice(0, 400);
+        const id = /\bid: (\S+)/.exec(head)?.[1];
+        const title = /\btitle: (.+)/.exec(head)?.[1] ?? '';
+        if (id) out.push({ id, title });
+      } catch {
+        // unreadable book: skip — exact-id lookup may still work
+      }
+    }
+    return out;
+  }
+
   appendEvent(event: Parameters<typeof eventLine>[0]): void {
     mkdirSync(dirname(this.ledgerPath), { recursive: true });
     appendFileSync(this.ledgerPath, eventLine(event) + '\n', 'utf8');
@@ -154,9 +175,21 @@ export function apply(ctx: Context, config: Config): void {
 
   const store = new ForgeStore(config.dataPath);
 
-  const taskById = (raw: string): { id: string } | { error: string } => {
-    const id = raw.trim().replace(/^#/, '').split(/\s+/)[0] ?? '';
-    return existsSync(store.taskPath(id)) ? { id } : { error: id };
+  const taskById = (raw: string): { id: string; tokenLen: number } | { error: string } => {
+    // Accepts an exact id, an id prefix, or a unique title substring — users
+    // should never have to memorize ids. tokenLen lets callers strip the
+    // matched token from the raw input.
+    const token = raw.trim().replace(/^#/, '').split(/\s+/)[0] ?? '';
+    if (!token) return { error: token };
+    if (existsSync(store.taskPath(token))) return { id: token, tokenLen: token.length };
+    const tasks = store.listTasks();
+    const byPrefix = tasks.filter((task) => task.id.startsWith(token));
+    if (byPrefix.length === 1) return { id: byPrefix[0]!.id, tokenLen: token.length };
+    const needle = token.toLowerCase();
+    const byTitle = tasks.filter((task) => task.title.toLowerCase().includes(needle) && needle.length >= 2);
+    if (byTitle.length === 1) return { id: byTitle[0]!.id, tokenLen: token.length };
+    if (byPrefix.length > 1 || byTitle.length > 1) return { error: `${token}（匹配到多个任务，说得更具体一点）` };
+    return { error: token };
   };
 
   /** quota publishes its meter; a missing or unreadable file simply means no warning. */
@@ -345,7 +378,7 @@ export function apply(ctx: Context, config: Config): void {
       // One holder needs no flag; several windows must say which one read back,
       // otherwise the per-window ledger would credit the wrong window.
       const target = toMatch?.[1] ?? (task.targets.length === 1 ? task.targets[0]!.name : null);
-      const content = input.slice(input.indexOf(found.id) + found.id.length).replace(/\s--to\s+\S+/, '').trim();
+      const content = input.trim().slice(found.tokenLen).replace(/\s--to\s+\S+/, '').trim();
       const hs = parseHandshake(content);
       if (!hs.ok) return { kind: 'error', text: renderAckReply(hs, task, target ?? '对方') };
       const now = new Date().toISOString();
@@ -386,7 +419,7 @@ export function apply(ctx: Context, config: Config): void {
       const found = taskById(input);
       if ('error' in found) return { kind: 'error', text: `用法：/answer <id> <Q编号> <答案>。没有任务书 ${found.error || '(空)'}。` };
       const task = store.loadTask(found.id)!;
-      const rest = input.slice(input.indexOf(found.id) + found.id.length).trim();
+      const rest = input.trim().slice(found.tokenLen).trim();
       const [qid, ...answerParts] = rest.split(/\s+/);
       const answer = answerParts.join(' ').trim();
       if (!qid || !answer) return { kind: 'error', text: `用法：/answer ${task.id} <Q编号> <答案>。缺口编号见 /forge-list 或上次 /ack 输出。` };
