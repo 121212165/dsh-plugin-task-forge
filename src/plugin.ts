@@ -217,12 +217,38 @@ export function apply(ctx: Context, config: Config): void {
     ].join('\n');
   };
 
+  // Compile-pending tasks ride the system-prompt section — followup() proved
+  // unreliable in live web runs (three drafts created, zero compiles), while
+  // section injection is the family's live-verified channel.
+  const compilePending = (): string => {
+    const { events } = store.loadStates();
+    const compiled = new Set(events.filter((event) => event.event === 'revised').map((event) => event.task));
+    const pending = events
+      .filter((event) => event.event === 'created' && !compiled.has(event.task))
+      .map((event) => event.task);
+    const blocks: string[] = [];
+    for (const id of pending.slice(0, 3)) {
+      const task = store.loadTask(id);
+      if (!task || task.status !== 'draft' || task.acceptance.trim()) continue; // only drafts pending compile
+      blocks.push(
+        [
+          `### 待编译任务 ${id}（${task.mode === 'interview' ? 'interview' : 'auto'} 模式）`,
+          `原始需求：${task.goal.slice(0, 300)}`,
+          '请立即调用 forge_write 编译这个任务（task_id 用上面的 id），不要先询问用户：能定的写进 decisions，定不了的写成 open 缺口，acceptance 必须逐条编号 A1/A2…。编译完成后告诉用户 /relay 导出。',
+        ].join('\n'),
+      );
+    }
+    if (!blocks.length) return '';
+    return ['## 待编译任务（task-forge）', '以下任务草稿还没有编译。逐个立即处理，全部完成后再继续回答用户的其他问题：', '', ...blocks].join('\n');
+  };
+
   ctx.systemPrompt.section({
     name: 'task-forge',
     order: config.order,
     text: () => {
       try {
-        return renderSection(foldStates(store.loadStates().events), { limit: config.limit, maxChars: config.maxChars });
+        const parts = [compilePending(), renderSection(foldStates(store.loadStates().events), { limit: config.limit, maxChars: config.maxChars })].filter(Boolean);
+        return parts.join('\n\n');
       } catch (error) {
         log.warn(`task-forge section skipped: ${String(error)}`);
         return '';

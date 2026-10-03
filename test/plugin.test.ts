@@ -279,6 +279,33 @@ test('/ack NEED-INPUT files the gaps as numbered Q lines, /answer resolves them 
   assert.ok(miss.text.includes('Q2'));
 });
 
+test('compile-pending tasks ride the system-prompt section until compiled', async () => {
+  const harness = await mounted();
+  const id = await forged(harness, '给终端加个倒计时');
+
+  // draft without compile: section demands the model compile it immediately
+  const pending = harness.sectionText();
+  assert.ok(pending.includes('待编译任务'), pending);
+  assert.ok(pending.includes(id));
+  assert.ok(pending.includes('forge_write'));
+  assert.ok(pending.includes('给终端加个倒计时'));
+
+  // after forge_write compiles it, the demand disappears
+  await harness.tool('forge_write').execute({
+    task_id: id,
+    title: '倒计时',
+    goal: '会话开始倒计时',
+    acceptance: 'A1: 启动时响一声',
+  });
+  assert.ok(!harness.sectionText().includes('待编译任务'));
+
+  // relaying an uncompiled draft also clears the demand (user chose raw handoff)
+  const harness2 = await mounted();
+  const id2 = await forged(harness2, '另一个需求');
+  fireOk(harness2, 'relay', `${id2} --to 窗口X`);
+  assert.ok(!harness2.sectionText().includes('待编译任务'));
+});
+
 test('/forge-list renders the ledger, /forge-done retires tasks from injection', async () => {
   const empty = await mounted();
   assert.ok(empty.command('forge-list').handler({}).text.includes('空的'));
