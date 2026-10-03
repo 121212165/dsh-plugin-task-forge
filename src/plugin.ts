@@ -223,29 +223,35 @@ export function apply(ctx: Context, config: Config): void {
   };
 
   /** Compile instructions ride followup when a live session exists; headless
-   * falls back to a paste-me block so the flow never dead-ends. */
+   * falls back to a paste-me block so the flow never dead-ends. followup has
+   * thrown in live web runs — any failure here falls back to the paste block
+   * AND the section's compile-pending list, never a swallowed exception. */
   const injectCompile = (task: TaskBook, rawNeed: string): string => {
     const instruction = renderCompileInstruction(task, rawNeed);
-    const session = ctx.agents?.get?.(brandString<never>('client-session' as never)) ?? undefined;
-    const agent = (ctx.agents?.list?.() ?? [])[0] ?? session;
-    if (agent?.followup) {
-      agent.followup(
-        createUserMessage({
-          content: [{ type: 'text', text: instruction }],
-          // format v4 retired the catch-all 'plugin' kind; third-party producers
-          // namespace theirs as `plugin:<name>`, which is what the official v3->v4
-          // producerKind() migrates legacy wrappers to. A bare `task-forge` would
-          // load fine but sits in the namespace v4 reserves for first-party
-          // producers (runtime-context, compact-checkpoint, agent-instructions).
-          source: { kind: `plugin:${name}`, form: 'notice', summary: `任务编译 ${task.id}` } as unknown as Parameters<typeof createUserMessage>[0]['source'],
-        }),
-      );
-      return `已把编译指令注入当前会话，模型编译后会经 forge_write 落盘。任务 id: ${task.id}（/relay ${task.id} 导出交接包）。`;
+    try {
+      const session = ctx.agents?.get?.(brandString<never>('client-session' as never)) ?? undefined;
+      const agent = (ctx.agents?.list?.() ?? [])[0] ?? session;
+      if (agent?.followup) {
+        agent.followup(
+          createUserMessage({
+            content: [{ type: 'text', text: instruction }],
+            // format v4 retired the catch-all 'plugin' kind; third-party producers
+            // namespace theirs as `plugin:<name>`, which is what the official v3->v4
+            // producerKind() migrates legacy wrappers to. A bare `task-forge` would
+            // load fine but sits in the namespace v4 reserves for first-party
+            // producers (runtime-context, compact-checkpoint, agent-instructions).
+            source: { kind: `plugin:${name}`, form: 'notice', summary: `任务编译 ${task.id}` } as unknown as Parameters<typeof createUserMessage>[0]['source'],
+          }),
+        );
+        return `已把编译指令注入当前会话，模型编译后会经 forge_write 落盘。任务 id: ${task.id}（/relay ${task.id} 导出交接包）。`;
+      }
+    } catch (error) {
+      log.warn(`followup injection failed, falling back to paste-me: ${String(error)}`);
     }
     return [
-      `任务草稿已建：${task.id}。当前环境没有可注入的活跃会话——把下面整段手动粘贴到任意 dsh 窗口（需已挂载本插件）：`,
+      `任务草稿已建：${task.id}。模型会通过系统提示里的「待编译任务」自动编译（下一两个回合）；若没动静，说"编译任务"或把下面整段手动粘贴到任意 dsh 窗口：`,
       '------------------------ 8< ------------------------',
-      renderCompileInstruction(task, rawNeed),
+      instruction,
       '------------------------ >8 ------------------------',
     ].join('\n');
   };
