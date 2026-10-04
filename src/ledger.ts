@@ -52,6 +52,7 @@ export function parseLine(line: string): LedgerEvent | null {
   if (typeof value.event !== 'string' || !KINDS.includes(value.event)) return null;
   if (typeof value.ts !== 'string' || !Number.isFinite(Date.parse(value.ts))) return null;
   const ev = value as unknown as LedgerEvent;
+  if (value.v !== undefined && value.v !== 1) return null; // future envelope
   // Notes come from user/agent free text: a stray newline would break JSONL.
   return { ...ev, note: typeof ev.note === 'string' ? ev.note.replace(/\s+/g, ' ').trim() : undefined };
 }
@@ -68,7 +69,9 @@ export function parseLedger(content: string): { events: LedgerEvent[]; skipped: 
 }
 
 export function eventLine(event: LedgerEvent): string {
-  const clean = { ...event, note: event.note?.replace(/\s+/g, ' ').trim() };
+  // envelope version for P5 compatibility: older readers and older cached
+  // state meet what we write; parseLine accepts v1 and versionless legacy rows
+  const clean = { v: 1, ...event, note: event.note?.replace(/\s+/g, ' ').trim() };
   return JSON.stringify(clean);
 }
 
