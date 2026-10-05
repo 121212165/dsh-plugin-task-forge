@@ -27,7 +27,9 @@ import {
   remainingGapIds,
   renderCompileInstruction,
   renderTaskMarkdown,
+  STATUS_LABEL,
   targetNames,
+  targetSummary,
   validateTask,
   withPhase,
   withTarget,
@@ -508,6 +510,23 @@ export function apply(ctx: Context, config: Config): void {
       store.saveTask(task);
       store.appendEvent({ ts: now, task: task.id, event: 'done', version: task.version, status: 'done', title: task.title });
       return { kind: 'success', text: `${task.id} 已标记完成，不再注入系统提示。` };
+    },
+  });
+
+  ctx.commands.register({
+    name: 'forge-show',
+    description: '查看任务书全文：/forge-show <模糊id>（顶部一行状态摘要，后接完整任务书）',
+    input: { hint: '<id|前缀|标题子串>' },
+    handler: ({ rawInput }) => {
+      try {
+        const found = taskById(String(rawInput ?? ''));
+        if ('error' in found) return { kind: 'error', text: `没有任务书 ${found.error || '(空)'}。/forge-list 先看台账。` };
+        const task = store.loadTask(found.id)!;
+        const summary = `任务书 ${task.id}@v${task.version} [${STATUS_LABEL[task.status]}] · 窗口: ${targetSummary(task.targets, task.version)}`;
+        return { kind: 'success', text: `${summary}\n\n${renderTaskMarkdown(task)}` };
+      } catch (error) {
+        return { kind: 'error', text: `/forge-show 内部出错：${String(error)}` };
+      }
     },
   });
 

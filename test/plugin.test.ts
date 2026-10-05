@@ -51,11 +51,11 @@ test('bad config fails loud naming task-forge, disabled mounts nothing', async (
   assert.equal(off.sections.length, 0);
 });
 
-test('apply wires six commands, the forge_write tool, and the prompt section', async () => {
+test('apply wires seven commands, the forge_write tool, and the prompt section', async () => {
   const harness = await mounted();
   assert.deepEqual(
     harness.commands.map((command) => command.name).sort(),
-    ['ack', 'answer', 'forge', 'forge-done', 'forge-list', 'relay'],
+    ['ack', 'answer', 'forge', 'forge-done', 'forge-list', 'forge-show', 'relay'],
   );
   assert.equal(harness.tool('forge_write').name, 'forge_write');
   const section = harness.sections.find((candidate) => candidate.name === 'task-forge');
@@ -643,4 +643,36 @@ test('a bad quotaHistoryPath fails startup naming task-forge', async () => {
       return true;
     });
   }
+});
+
+test('/forge-show prints the full book: status summary line, acceptance ids, handshake', async () => {
+  const harness = await mounted();
+  const id = await forged(harness, '给图片查看器加取色功能');
+  const store = await storeOf(harness);
+  const task = store.loadTask(id)!;
+  task.acceptance = 'A1 点击画布取色\nA2 色值入剪贴板';
+  task.context = '已有 canvas 渲染层';
+  store.saveTask(task);
+
+  const text = fireOk(harness, 'forge-show', id);
+  // top line is a one-line status summary, book follows in full
+  assert.ok(text.startsWith(`任务书 ${id}@v1 [草稿] · 窗口: 还没交接过`), `summary line missing: ${text.slice(0, 80)}`);
+  assert.ok(text.includes('A1 点击画布取色'), 'acceptance ids must appear');
+  assert.ok(text.includes('## 握手指令（HANDSHAKE）'), 'handshake rides along');
+});
+
+test('/forge-show accepts id prefixes and title substrings, errors loudly otherwise', async () => {
+  const harness = await mounted();
+  await forged(harness, '给图片查看器加取色功能');
+
+  const byTitle = fireOk(harness, 'forge-show', '取色');
+  assert.ok(byTitle.includes('# 任务书 '));
+  const byPrefix = fireOk(harness, 'forge-show', (await storeOf(harness)).listTasks()[0]!.id.slice(0, 10));
+  assert.ok(byPrefix.includes('## 背景（CONTEXT）'));
+
+  const missing = fire(harness, 'forge-show', '20990101-zzzz');
+  assert.equal(missing.kind, 'error');
+  assert.ok(missing.text.includes('/forge-list'));
+  const empty = fire(harness, 'forge-show', '');
+  assert.equal(empty.kind, 'error');
 });
