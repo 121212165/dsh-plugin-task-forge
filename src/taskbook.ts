@@ -100,6 +100,17 @@ export function withPhase(task: TaskBook, phase?: TaskPhase): TaskBook {
   return next;
 }
 
+/** A context note is metadata, not protocol: it lands in CONTEXT as a dated
+ * line without bumping the version — receivers confirm by version, and a note
+ * never touches goal/constraints/acceptance. The version stays, so an existing
+ * ✓ ack is not invalidated by it. */
+export function withNote(task: TaskBook, text: string, now = new Date()): TaskBook {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  const line = `- ${now.toISOString().slice(0, 10)} ${clean}`;
+  const base = task.context.trim();
+  return { ...task, context: base ? `${base}\n${line}` : line, updatedAt: now.toISOString() };
+}
+
 function isWellFormedTarget(value: unknown): value is TaskTarget {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const target = value as Partial<TaskTarget>;

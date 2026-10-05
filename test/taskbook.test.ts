@@ -21,6 +21,7 @@ import {
   preservedAnswers,
   forgeCardTitle,
   withPhase,
+  withNote,
   HANDSHAKE_TEXT,
   EMPTY_SECTION,
   type TaskBook,
@@ -239,4 +240,30 @@ test('the compiler cannot drop the user answers, and the card title says what ha
   assert.equal(forgeCardTitle('字段没过校验，未落盘：\n- goal 不能为空'), '✗ 任务书字段没过校验');
   assert.equal(forgeCardTitle('找不到任务 20990101-zzzz。'), '✗ 找不到对应任务书');
   assert.equal(forgeCardTitle('没见过的一句话'), '没见过的一句话');
+});
+
+test('withNote appends a dated line to CONTEXT without bumping the version', () => {
+  const at = new Date('2026-10-05T09:30:00.000Z');
+  const noted = withNote(base, '配色以 designer 的 Figma 为准', at);
+
+  // version and protocol fields untouched
+  assert.equal(noted.version, base.version);
+  assert.equal(noted.status, base.status);
+  assert.equal(noted.acceptance, base.acceptance);
+  assert.ok(noted.updatedAt > base.updatedAt);
+
+  // note lands as the last CONTEXT line, dated
+  const lines = noted.context.split('\n');
+  assert.equal(lines[0], base.context);
+  assert.equal(lines[1], '- 2026-10-05 配色以 designer 的 Figma 为准');
+});
+
+test('withNote starts the CONTEXT when it was empty, and collapses messy whitespace', () => {
+  const at = new Date('2026-10-05T09:30:00.000Z');
+  const fromEmpty = withNote({ ...base, context: '' }, '  先看   老仓库  ', at);
+  assert.equal(fromEmpty.context, '- 2026-10-05 先看 老仓库');
+
+  const round = parseTaskMarkdown(renderTaskMarkdown(fromEmpty));
+  assert.equal(round.issues.length, 0);
+  assert.equal(round.task!.context, fromEmpty.context);
 });

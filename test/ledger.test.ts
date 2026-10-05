@@ -136,3 +136,21 @@ test('renderSection: done tasks drop out, live tasks show with marks and budget 
   assert.ok(truncated.split('\n')[2]!.length <= 100);
   assert.ok(truncated.endsWith('…'));
 });
+
+test('noted events fold into a per-task tally and show up in forge-list', () => {
+  // explicit ts: the shared ev() helper's `T0${seq}` stamp breaks at seq >= 10
+  const at = (m: number): string => `2026-10-02T09:0${m}:00.000Z`;
+  const events: LedgerEvent[] = [
+    ev({ ts: at(1), event: 'created', version: 1, status: 'draft', title: '取色器' }),
+    ev({ ts: at(2), event: 'noted', version: 1, status: 'draft', note: '配色以 Figma 为准' }),
+    ev({ ts: at(3), event: 'noted', version: 1, status: 'draft', note: '先看老仓库' }),
+  ];
+
+  // parseLine must accept the new kind — and eventLine must roundtrip it
+  assert.equal(parseLine(eventLine(events[1]!))!.event, 'noted');
+
+  const [state] = foldStates(events);
+  assert.equal(state!.notes, 2);
+  const list = renderForgeList(foldStates(events));
+  assert.ok(list.includes('备注 2'), list);
+});

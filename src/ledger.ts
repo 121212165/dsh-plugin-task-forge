@@ -5,7 +5,7 @@
 
 import { STATUS_LABEL, targetSummary, type TaskStatus, type TaskTarget } from './taskbook.ts';
 
-export type LedgerEventKind = 'created' | 'revised' | 'relayed' | 'acked' | 'gap-resolved' | 'done';
+export type LedgerEventKind = 'created' | 'revised' | 'relayed' | 'acked' | 'gap-resolved' | 'noted' | 'done';
 
 export interface LedgerEvent {
   ts: string;
@@ -29,6 +29,8 @@ export interface TaskState {
   /** handshake tallies folded from acked events */
   acksReady: number;
   acksGap: number;
+  /** context notes appended via /forge-note — metadata, version untouched */
+  notes: number;
   lastNote?: string;
 }
 
@@ -36,7 +38,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-const KINDS: readonly string[] = ['created', 'revised', 'relayed', 'acked', 'gap-resolved', 'done'];
+const KINDS: readonly string[] = ['created', 'revised', 'relayed', 'acked', 'gap-resolved', 'noted', 'done'];
 
 export function parseLine(line: string): LedgerEvent | null {
   const text = line.trim();
@@ -90,6 +92,7 @@ export function foldStates(events: LedgerEvent[]): TaskState[] {
       events: 0,
       acksReady: 0,
       acksGap: 0,
+      notes: 0,
     };
     current.events += 1;
     current.lastAt = event.ts;
@@ -97,6 +100,7 @@ export function foldStates(events: LedgerEvent[]): TaskState[] {
     if (event.status) current.status = event.status;
     if (event.title) current.title = event.title;
     if (event.note) current.lastNote = event.note;
+    if (event.event === 'noted') current.notes += 1;
     if (event.target && (event.event === 'relayed' || event.event === 'acked') && !current.targets.includes(event.target)) {
       current.targets.push(event.target);
     }
@@ -170,6 +174,7 @@ export function renderForgeList(states: TaskState[], skipped = 0, details: Map<s
     if (detail?.mode) facts.push(detail.mode === 'interview' ? 'interview' : 'auto');
     if (state.acksReady) facts.push(`回读通过 ${state.acksReady} 次`);
     if (state.acksGap) facts.push(`待补缺口 ${state.acksGap} 次`);
+    if (state.notes) facts.push(`备注 ${state.notes}`);
     if (detail) {
       if (detail.missing) facts.push('⚠ 任务书文件缺失');
       else {

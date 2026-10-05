@@ -31,6 +31,7 @@ import {
   targetNames,
   targetSummary,
   validateTask,
+  withNote,
   withPhase,
   withTarget,
   withTargetAcked,
@@ -526,6 +527,29 @@ export function apply(ctx: Context, config: Config): void {
         return { kind: 'success', text: `${summary}\n\n${renderTaskMarkdown(task)}` };
       } catch (error) {
         return { kind: 'error', text: `/forge-show 内部出错：${String(error)}` };
+      }
+    },
+  });
+
+  ctx.commands.register({
+    name: 'forge-note',
+    description: '向任务书 CONTEXT 追加备注行（不 bump version，备注非协议变更）：/forge-note <模糊id> <文本>',
+    input: { hint: '<id|前缀|标题子串> <备注>' },
+    handler: ({ rawInput }) => {
+      try {
+        const input = String(rawInput ?? '');
+        const found = taskById(input);
+        if ('error' in found) return { kind: 'error', text: `没有任务书 ${found.error || '(空)'}。/forge-list 先看台账。` };
+        const text = input.trim().slice(found.tokenLen).trim();
+        if (!text) return { kind: 'error', text: `用法：/forge-note <模糊id> <备注文本>。备注以日期行追加到 CONTEXT，版本不变。` };
+        const now = new Date();
+        const task = store.loadTask(found.id)!;
+        const next = withNote(task, text, now);
+        store.saveTask(next);
+        store.appendEvent({ ts: now.toISOString(), task: next.id, event: 'noted', version: next.version, status: next.status, title: next.title, note: text });
+        return { kind: 'success', text: `备注已追加到 ${next.id} 的 CONTEXT（版本保持 v${next.version}，已交接窗口无需重读）。` };
+      } catch (error) {
+        return { kind: 'error', text: `/forge-note 内部出错：${String(error)}` };
       }
     },
   });

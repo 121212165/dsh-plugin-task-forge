@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync, writeFileSync } from 'node:fs';import { join } from 'node:path';
 
-import { makeHarness, fire, fireOk, type Harness } from './harness.ts';
+import { makeHarness, fire, fireOk, toolResult, type Harness } from './harness.ts';
 import { parseTaskMarkdown } from '../src/taskbook.ts';
 
 async function mounted(opts?: { agent?: boolean }): Promise<Harness> {
@@ -51,11 +51,11 @@ test('bad config fails loud naming task-forge, disabled mounts nothing', async (
   assert.equal(off.sections.length, 0);
 });
 
-test('apply wires seven commands, the forge_write tool, and the prompt section', async () => {
+test('apply wires eight commands, the forge_write tool, and the prompt section', async () => {
   const harness = await mounted();
   assert.deepEqual(
     harness.commands.map((command) => command.name).sort(),
-    ['ack', 'answer', 'forge', 'forge-done', 'forge-list', 'forge-show', 'relay'],
+    ['ack', 'answer', 'forge', 'forge-done', 'forge-list', 'forge-note', 'forge-show', 'relay'],
   );
   assert.equal(harness.tool('forge_write').name, 'forge_write');
   const section = harness.sections.find((candidate) => candidate.name === 'task-forge');
@@ -675,4 +675,52 @@ test('/forge-show accepts id prefixes and title substrings, errors loudly otherw
   assert.ok(missing.text.includes('/forge-list'));
   const empty = fire(harness, 'forge-show', '');
   assert.equal(empty.kind, 'error');
+});
+
+test('/forge-note appends a dated context line, keeps the version, and logs a noted event', async () => {
+  const harness = await mounted();
+  const id = await forged(harness, '给图片查看器加取色功能');
+  // compile it first so the note lands on a real book
+  await toolResult(harness, 'forge_write', { task_id: id, goal: '取色', acceptance: 'A1 取色' });
+
+  const out = fireOk(harness, 'forge-note', `${id} 配色以 Figma 为准`);
+  assert.ok(out.includes('版本保持 v1'), out);
+
+  const task = (await storeOf(harness)).loadTask(id)!;
+  assert.equal(task.version, 1);
+  assert.ok(task.context.endsWith('- ' + new Date().toISOString().slice(0, 10) + ' 配色以 Figma 为准'), task.context);
+
+  const list = fire(harness, 'forge-list').text;
+  assert.ok(list.includes('备注 1'), list);
+
+  // roundtrip: the relayed copy parses back clean with the note inside
+  const relayed = fireOk(harness, 'relay', id);
+  const store = await storeOf(harness);
+  const parsed = parseTaskMarkdown(readFileSync(join(harness.dataPath, 'outbox', `${id}-v1.md`), 'utf8'));
+  assert.equal(parsed.issues.length, 0);
+  assert.ok(parsed.task!.context.includes('配色以 Figma 为准'));
+});
+
+test('/forge-note never wakes compile-pending: a compiled book stays out of the section', async () => {
+  const harness = await mounted();
+  const id = await forged(harness, '给图片查看器加取色功能');
+  await toolResult(harness, 'forge_write', { task_id: id, goal: '取色', acceptance: 'A1 取色' });
+  fireOk(harness, 'forge-note', `${id} 先看老仓库`);
+  assert.ok(!harness.sectionText().includes('待编译'), harness.sectionText());
+
+  // a still-uncompiled draft stays pending exactly once — a note must not duplicate it
+  const second = await forged(harness, '第二号任务');
+  fireOk(harness, 'forge-note', `${second} 备注一条`);
+  const pending = harness.sectionText().split('待编译任务 ' + second).length - 1;
+  assert.equal(pending, 1);
+});
+
+test('/forge-note errors loudly on unknown ids and empty note text', async () => {
+  const harness = await mounted();
+  const missing = fire(harness, 'forge-note', '20990101-zzzz hi');
+  assert.equal(missing.kind, 'error');
+  const id = await forged(harness, '给图片查看器加取色功能');
+  const noText = fire(harness, 'forge-note', id);
+  assert.equal(noText.kind, 'error');
+  assert.ok(noText.text.includes('用法'), noText.text);
 });
