@@ -1,5 +1,19 @@
 # dsh-plugin-task-forge
 
+<div align="center">
+
+**把大白话编译成任务书，跨窗口 AI 无损交接** —— `/forge` 编译 · `/relay` 交接 · **回读握手**逼出理解损耗 · 缺口闭环、版本号跨窗口唯一权威
+
+[![GitHub stars](https://img.shields.io/github/stars/121212165/dsh-plugin-task-forge?style=social)](https://github.com/121212165/dsh-plugin-task-forge/stargazers) [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![tests](https://img.shields.io/badge/tests-node%20--test%20passing-brightgreen)]()
+
+**60 秒上手**：`dsh plugin --profile web add github:121212165/dsh-plugin-task-forge` → 重启 dsh → 对话里输入 `/forge <你的需求>`（详细安装见下文）
+
+<!-- 截图版位：/forge-list 作战面板 web UI 实拍截图 / GIF（待补） -->
+
+</div>
+
+> 🧩 **dsh 插件家族**（22 件）：总目录 **[dsh-plugin-family](https://github.com/121212165/dsh-plugin-family)** ｜ 兄弟插件：**[ide-hub](https://github.com/121212165/dsh-plugin-ide-hub)** 跨 IDE 统一管理 · **[quota](https://github.com/121212165/dsh-plugin-quota)** 实时用量仪表
+
 **EN** · Compiles a rough need into a versioned task book, then hands it to any other AI window through a **read-back handshake**: `/forge` compiles, `/relay` emits, `/ack` proves the receiver got it byte-for-byte, `/answer` returns — aimed at the lossy copy-paste handoff between agents. · 61 `node --test` green · design notes in `TASK-FORGE-DESIGN.md`.
 
 dsh 插件：**先把大白话编译成任务书，再无损交接给任意窗口的 AI**。
