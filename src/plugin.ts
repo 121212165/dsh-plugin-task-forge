@@ -123,10 +123,10 @@ export class ForgeStore {
     const path = this.taskPath(id);
     if (!existsSync(path)) return null;
     const { task, issues } = parseTaskMarkdown(readFileSync(path, 'utf8'));
-    // parseTaskMarkdown 对损坏文件不会返回 null，而是“修”出一个空壳任务——
-    // 直接放行会让空壳任务照常 relay/save 覆盖磁盘。合法任务书的
-    // render/parse roundtrip 恒为零 issues，有问题就是文件损坏。
-    if (issues.length) throw new Error(`任务书 ${id} 损坏无法解析：${issues.join('；')}`);
+    // parseTaskMarkdown 对彻底不是任务书的垃圾返回 null 任务——直接放行
+    // 会让空壳任务照常 relay/save 覆盖磁盘，必须在这里炸出来。注意编译前
+    // 的草稿（acceptance 还空着）合法地带着字段 issues，不能当成损坏。
+    if (!task) throw new Error(`任务书 ${id} 损坏无法解析：${issues.join('；')}`);
     return task;
   }
 
@@ -250,18 +250,6 @@ export function apply(ctx: Context, config: Config): void {
     return { currency: summary.currency, microsPerToken: summary.todayCostMicros / summary.todayTokens };
   };
 
-  /** loadTask 对不存在的任务返回 null，对损坏文件抛异常；命令层需要把
-   * 后者变成可操作的错误回复而不是裸 stack。 */
-  const loadTaskOrError = (id: string): { task: TaskBook } | { error: string } => {
-    try {
-      const task = store.loadTask(id);
-      return task ? { task } : { error: `没有任务书 ${id}。/forge-list 先看台账。` };
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      return { error: `任务书 ${id} 已损坏：${detail}\n可手动修复 tasks/${id}/task.md 后重试。` };
-    }
-  };
-
   /** Compile instructions ride followup when a live session exists; headless
    * falls back to a paste-me block so the flow never dead-ends. followup has
    * thrown in live web runs — any failure here falls back to the paste block
@@ -352,16 +340,13 @@ export function apply(ctx: Context, config: Config): void {
     name: 'forge',
     description: '把大白话需求编译成任务书：/forge <需求> [--mode interview]（默认 auto：模型推演+暴露缺口）',
     input: { hint: '<需求> [--mode interview]' },
-    handler: async ({ rawInput }) => {
+    handler: ({ rawInput }) => {
       const raw = String(rawInput ?? '');
       const modeMatch = /\s--mode\s+(auto|interview)\b/.exec(raw);
       const mode: ForgeMode = (modeMatch?.[1] as ForgeMode) ?? 'auto';
       const need = raw.replace(/\s--mode\s+(auto|interview)\b/g, '').trim();
       if (!need) return { kind: 'error', text: '用法：/forge <大白话需求> [--mode interview]。需求说清楚一点，编译质量取决于你给的原始信息。' };
-      // saveTask 涉及 id 探测 + 落盘 + 追账，整段排队；injectCompile 只发消息
-      // 不碰磁盘，留在回调内让它共享同一串行窗口也没有坏处。
-      const result = await store.queue(() => {
-        const now = new Date();
+      const now = new Date();
       // 同日撞 id 不允许静默覆盖旧任务书：重抽到唯一为止（个别位数随机性足够，
       // 仍给上限防极端环境 random 退化）。
       let id = makeTaskId(now);
@@ -389,8 +374,6 @@ export function apply(ctx: Context, config: Config): void {
       store.saveTask(task);
       store.appendEvent({ ts: now.toISOString(), task: task.id, event: 'created', version: 1, status: 'draft', title: task.title, note: `mode:${mode}` });
       return { kind: 'success' as const, text: injectCompile(task, need) };
-      });
-      return result;
     },
   });
 
@@ -398,7 +381,7 @@ export function apply(ctx: Context, config: Config): void {
     name: 'relay',
     description: '导出任务书交接包（自包含单文件，含握手指令）：/relay <id> [--to <窗口名>|ide:<工具名>]',
     input: { hint: '<id> [--to <窗口名>|ide:zcode]' },
-    handler: async ({ rawInput }) => {
+    handler: ({ rawInput }) => {
       const raw = String(rawInput ?? '');
       const found = taskById(raw);
       if ('error' in found) return { kind: 'error', text: `没有任务书 ${found.error || '(空)'}。/forge-list 先看台账。` };
@@ -409,35 +392,30 @@ export function apply(ctx: Context, config: Config): void {
         return { kind: 'error', text: `不认识 ide:${requested}。可派发：${IDE_TARGETS.map((target) => `ide:${target.tool}`).join(' / ')}。不带 ide: 前缀就按普通窗口名处理（把文件贴给那个窗口）。` };
       }
       const target = requested !== null ? `ide:${requested}` : (toMatch?.[1] ?? '未命名窗口');
-      // 队列内重新 load：排队期间任务可能已被别的窗口改过，对队列外快照
-      // 落盘就是丢更新。
-      return store.queue(() => {
-        const task = store.loadTask(found.id);
-        if (!task) return { kind: 'error', text: `任务书 ${found.id} 在排队期间消失了。重试 /relay。` };
-        const now = new Date().toISOString();
-        task.targets = withTarget(task.targets, target);
-        task.status = 'relayed';
-        task.updatedAt = now;
-        store.saveTask(task);
-        store.appendEvent({ ts: now, task: task.id, event: 'relayed', version: task.version, status: task.status, title: task.title, target });
-        const dest = store.outboxPath(outboxName(task));
-        const markdown = renderTaskMarkdown(task);
-        writeAtomic(dest, markdown);
-        const lines = [`交接包已导出：${dest}`];
-        if (ide) {
-          const ref = resolve(hubReferencePath(task, config.hubPath));
-          writeAtomic(ref, markdown);
-          lines.push(renderIdeRelayNote(ide, ref));
-        } else {
-          lines.push(`把该文件全文粘贴给「${target}」窗口的 AI。对方必须按文内握手指令先回读（复述+缺口+STATUS），STATUS: READY 之前不会开工。`);
-        }
-        lines.push(`收到回读后：/ack ${task.id}${toMatch ? ` --to ${target}` : ''} <粘贴回读内容>`);
-        const summary = quotaSummary();
-        lines.push(renderCostLine(estimateTaskCost({ text: markdown, windows: task.targets.length, steps: quotaHistory() }), costPrice(summary)));
-        const warning = budgetWarningLine(summary);
-        if (warning) lines.push(warning);
-        return { kind: 'success', text: lines.join('\n') };
-      });
+      const task = store.loadTask(found.id)!;
+      const now = new Date().toISOString();
+      task.targets = withTarget(task.targets, target);
+      task.status = 'relayed';
+      task.updatedAt = now;
+      store.saveTask(task);
+      store.appendEvent({ ts: now, task: task.id, event: 'relayed', version: task.version, status: task.status, title: task.title, target });
+      const dest = store.outboxPath(outboxName(task));
+      const markdown = renderTaskMarkdown(task);
+      writeAtomic(dest, markdown);
+      const lines = [`交接包已导出：${dest}`];
+      if (ide) {
+        const ref = resolve(hubReferencePath(task, config.hubPath));
+        writeAtomic(ref, markdown);
+        lines.push(renderIdeRelayNote(ide, ref));
+      } else {
+        lines.push(`把该文件全文粘贴给「${target}」窗口的 AI。对方必须按文内握手指令先回读（复述+缺口+STATUS），STATUS: READY 之前不会开工。`);
+      }
+      lines.push(`收到回读后：/ack ${task.id}${toMatch ? ` --to ${target}` : ''} <粘贴回读内容>`);
+      const summary = quotaSummary();
+      lines.push(renderCostLine(estimateTaskCost({ text: markdown, windows: task.targets.length, steps: quotaHistory() }), costPrice(summary)));
+      const warning = budgetWarningLine(summary);
+      if (warning) lines.push(warning);
+      return { kind: 'success', text: lines.join('\n') };
     },
   });
 
@@ -445,56 +423,47 @@ export function apply(ctx: Context, config: Config): void {
     name: 'ack',
     description: '登记接收方的回读：/ack <id> [--to <窗口名>] <回读全文>（READY 放行 / NEED-INPUT 落成缺口）',
     input: { hint: '<id> [--to <窗口名>] <回读全文>' },
-    handler: async ({ rawInput }) => {
+    handler: ({ rawInput }) => {
       const input = String(rawInput ?? '').trim();
       const found = taskById(input);
       if ('error' in found) return { kind: 'error', text: `用法：/ack <id> [--to <窗口名>] <回读全文>。没有任务书 ${found.error || '(空)'}。` };
-      const loaded = loadTaskOrError(found.id);
-      if ('error' in loaded) return { kind: 'error', text: loaded.error };
+      const task = store.loadTask(found.id)!;
       const toMatch = /\s--to\s+(\S+)/.exec(input);
-      // 解析/切段基于队列外快照足够；真正落盘前队列内会重新 load。
-      const targetFallback = loaded.task.targets.length === 1 ? loaded.task.targets[0]!.name : null;
-      const content = input.slice(found.tokenLen).replace(/\s--to\s+\S+/, '').trim();
+      // One holder needs no flag; several windows must say which one read back,
+      // otherwise the per-window ledger would credit the wrong window.
+      const target = toMatch?.[1] ?? (task.targets.length === 1 ? task.targets[0]!.name : null);
+      const content = input.trim().slice(found.tokenLen).replace(/\s--to\s+\S+/, '').trim();
       const hs = parseHandshake(content);
-      if (!hs.ok) return { kind: 'error', text: renderAckReply(hs, loaded.task, toMatch?.[1] ?? targetFallback ?? '对方') };
-      // 队列内重新 load：排队期间任务可能已被别的窗口改过，拿到队列外
-      // 旧引用直接 save 就是丢更新。
-      return store.queue(() => {
-        const task = store.loadTask(found.id);
-        if (!task) return { kind: 'error', text: `任务书 ${found.id} 在排队期间消失了。重试 /ack。` };
-        const now = new Date().toISOString();
-        // One holder needs no flag; several windows must say which one read back,
-        // otherwise the per-window ledger would credit the wrong window.
-        const target = toMatch?.[1] ?? (task.targets.length === 1 ? task.targets[0]!.name : null);
-        const wantsInput = needsSenderInput(hs);
-        const passing = !wantsInput && !isStaleVersion(hs, task.version);
-        if (target && !wantsInput) task.targets = withTargetAcked(task.targets, target, hs.version!, now);
-        const qids = wantsInput ? nextGapQids(task, hs.gaps.length) : [];
-        if (qids.length) task.open = [task.open.trim(), ...hs.gaps.map((gap, index) => `${qids[index]} (来自对方回读): ${gap}`)].filter(Boolean).join('\n');
-        if (passing) task.status = 'ready';
-        task.updatedAt = now;
-        store.saveTask(task);
-        // 日志里的 version 永远记任务书当前的真实版本——foldStates 是后写者
-        // 胜，把对方声称的旧版本号追加成最后一行会让台账版本倒退；旧版本
-        // 只留在 note 里供排查。
-        store.appendEvent({
-          ts: now,
-          task: task.id,
-          event: 'acked',
-          version: task.version,
-          status: passing ? 'ready' : task.status,
-          title: task.title,
-          target: target ?? (passing ? '握手通过' : undefined),
-          note: passing
-            ? undefined
-            : wantsInput
-              ? `${hs.status === 'ready' ? 'READY 但列了缺口' : 'need-input'} · 缺口 ${hs.gaps.length} 条`
-              : `stale v${hs.version ?? '?'}`,
-        });
-        const who = target ?? '对方';
-        const unnamed = target === null && task.targets.length > 1 ? `（有 ${task.targets.length} 个窗口，下次加 --to <窗口名> 才记得住是谁回读的）` : '';
-        return { kind: 'success', text: renderAckReply(hs, task, who, qids) + unnamed };
+      if (!hs.ok) return { kind: 'error', text: renderAckReply(hs, task, target ?? '对方') };
+      const now = new Date().toISOString();
+      const wantsInput = needsSenderInput(hs);
+      const passing = !wantsInput && !isStaleVersion(hs, task.version);
+      if (target && !wantsInput) task.targets = withTargetAcked(task.targets, target, hs.version!, now);
+      const qids = wantsInput ? nextGapQids(task, hs.gaps.length) : [];
+      if (qids.length) task.open = [task.open.trim(), ...hs.gaps.map((gap, index) => `${qids[index]} (来自对方回读): ${gap}`)].filter(Boolean).join('\n');
+      if (passing) task.status = 'ready';
+      task.updatedAt = now;
+      store.saveTask(task);
+      // 日志里的 version 永远记任务书当前的真实版本——foldStates 是后写者
+      // 胜，把对方声称的旧版本号追加成最后一行会让台账版本倒退；旧版本
+      // 只留在 note 里供排查。
+      store.appendEvent({
+        ts: now,
+        task: task.id,
+        event: 'acked',
+        version: task.version,
+        status: passing ? 'ready' : task.status,
+        title: task.title,
+        target: target ?? (passing ? '握手通过' : undefined),
+        note: passing
+          ? undefined
+          : wantsInput
+            ? `${hs.status === 'ready' ? 'READY 但列了缺口' : 'need-input'} · 缺口 ${hs.gaps.length} 条`
+            : `stale v${hs.version ?? '?'}`,
       });
+      const who = target ?? '对方';
+      const unnamed = target === null && task.targets.length > 1 ? `（有 ${task.targets.length} 个窗口，下次加 --to <窗口名> 才记得住是谁回读的）` : '';
+      return { kind: 'success', text: renderAckReply(hs, task, who, qids) + unnamed };
     },
   });
 
@@ -502,56 +471,48 @@ export function apply(ctx: Context, config: Config): void {
     name: 'answer',
     description: '回答任务书的开放缺口（版本 +1）：/answer <id> <Q编号> <答案>',
     input: { hint: '<id> <Q编号> <答案>' },
-    handler: async ({ rawInput }) => {
+    handler: ({ rawInput }) => {
       const input = String(rawInput ?? '').trim();
       const found = taskById(input);
       if ('error' in found) return { kind: 'error', text: `用法：/answer <id> <Q编号> <答案>。没有任务书 ${found.error || '(空)'}。` };
-      const loaded = loadTaskOrError(found.id);
-      if ('error' in loaded) return { kind: 'error', text: loaded.error };
-      const rest = input.slice(found.tokenLen).trim();
+      const task = store.loadTask(found.id)!;
+      const rest = input.trim().slice(found.tokenLen).trim();
       const [qid, ...answerParts] = rest.split(/\s+/);
       const answer = answerParts.join(' ').trim();
-      if (!qid || !answer) return { kind: 'error', text: `用法：/answer ${loaded.task.id} <Q编号> <答案>。缺口编号见 /forge-list 或上次 /ack 输出。` };
-      return store.queue(() => {
-        // 队列内重新 load + 重新 applyAnswer：排队期间缺口可能被别的窗口
-        // 已答过（同 Q 编号第二次 answer 必须当场判 miss，不能对旧快照落盘）。
-        const task = store.loadTask(found.id);
-        if (!task) return { kind: 'error', text: `任务书 ${found.id} 在排队期间消失了。重试 /answer。` };
-        const result = applyAnswer(task, qid, answer);
-        if (result.kind === 'missing') return { kind: 'error', text: `${task.id} 的开放缺口里没有 ${qid}。当前缺口：\n${task.open || '（无）'}` };
-        store.saveTask(result.task);
-        store.appendEvent({
-          ts: new Date().toISOString(),
-          task: result.task.id,
-          event: 'gap-resolved',
-          version: result.task.version,
-          status: result.task.status,
-          title: result.task.title,
-          note: `${result.qid} → ${result.decisionId}`,
-        });
-        const targets = targetNames(result.task.targets).join(' 和 ') || '还没有窗口交接过';
-        const base = `${result.qid} 已答并写入 ${result.decisionId}，任务书现在是 ${result.task.id}@v${result.task.version}。已交接窗口：${targets}——需要把新版重新 /relay 给它们，让对方按新版重新回读。`;
-        const remaining = remainingGapIds(result.task.open);
-        if (result.task.phase !== 'awaiting-answers') return { kind: 'success', text: base };
-        if (remaining.length) {
-          return { kind: 'success', text: `${base}\ninterview 还剩 ${remaining.join(' ')} 没答；答完最后一条就会自动开始编译。` };
-        }
+      if (!qid || !answer) return { kind: 'error', text: `用法：/answer ${task.id} <Q编号> <答案>。缺口编号见 /forge-list 或上次 /ack 输出。` };
+      const result = applyAnswer(task, qid, answer);
+      if (result.kind === 'missing') return { kind: 'error', text: `${task.id} 的开放缺口里没有 ${qid}。当前缺口：\n${task.open || '（无）'}` };
+      store.saveTask(result.task);
+      store.appendEvent({
+        ts: new Date().toISOString(),
+        task: result.task.id,
+        event: 'gap-resolved',
+        version: result.task.version,
+        status: result.task.status,
+        title: result.task.title,
+        note: `${result.qid} → ${result.decisionId}`,
+      });
+      const targets = targetNames(result.task.targets).join(' 和 ') || '还没有窗口交接过';
+      const base = `${result.qid} 已答并写入 ${result.decisionId}，任务书现在是 ${result.task.id}@v${result.task.version}。已交接窗口：${targets}——需要把新版重新 /relay 给它们，让对方按新版重新回读。`;
+      const remaining = remainingGapIds(result.task.open);
+      if (result.task.phase !== 'awaiting-answers') return { kind: 'success', text: base };
+      if (remaining.length) {
+        return { kind: 'success', text: `${base}\ninterview 还剩 ${remaining.join(' ')} 没答；答完最后一条就会自动开始编译。` };
+      }
         // Last answer of the interview: hand the book back to the compiler, then clear the
         // phase so a repeated /answer on the same version cannot fire the loop twice.
         const compiled = injectCompile(result.task, result.task.goal);
         store.saveTask(withPhase(result.task));
-        // version 没走 revise()，事件名用 'compiled'，不与“revise 必须 +1”契约打架。
         store.appendEvent({
           ts: new Date().toISOString(),
           task: result.task.id,
-          event: 'compiled',
+          event: 'revised',
           version: result.task.version,
           status: result.task.status,
           title: result.task.title,
           note: 'interview 答完 → 重新编译',
         });
-        return { kind: 'success', text: `${base}\ninterview 的问题已全部答完。${compiled}` };
-      });
+      return { kind: 'success', text: `${base}\ninterview 的问题已全部答完。${compiled}` };
     },
   });
 
@@ -588,22 +549,16 @@ export function apply(ctx: Context, config: Config): void {
     name: 'forge-done',
     description: '标记任务完成：/forge-done <id>',
     input: { hint: '<id>' },
-    handler: async ({ rawInput }) => {
+    handler: ({ rawInput }) => {
       const found = taskById(String(rawInput ?? ''));
-      if ('error' in found) return { kind: 'error', text: `没有任务书 ${found.error}。/forge-list 先看台账。` };
-      const loaded = loadTaskOrError(found.id);
-      if ('error' in loaded) return { kind: 'error', text: loaded.error };
-      return store.queue(() => {
-        // 队列内重新 load（同 /ack）：排队期间状态可能已变。
-        const task = store.loadTask(found.id);
-        if (!task) return { kind: 'error', text: `任务书 ${found.id} 在排队期间消失了。重试 /forge-done。` };
-        const now = new Date().toISOString();
-        task.status = 'done';
-        task.updatedAt = now;
-        store.saveTask(task);
-        store.appendEvent({ ts: now, task: task.id, event: 'done', version: task.version, status: 'done', title: task.title });
-        return { kind: 'success', text: `${task.id} 已标记完成，不再注入系统提示。` };
-      });
+      if ('error' in found) return { kind: 'error', text: `没有任务书 ${found.error || '(空)'}。/forge-list 先看台账。` };
+      const task = store.loadTask(found.id)!;
+      const now = new Date().toISOString();
+      task.status = 'done';
+      task.updatedAt = now;
+      store.saveTask(task);
+      store.appendEvent({ ts: now, task: task.id, event: 'done', version: task.version, status: 'done', title: task.title });
+      return { kind: 'success', text: `${task.id} 已标记完成，不再注入系统提示。` };
     },
   });
 
@@ -687,52 +642,47 @@ export function apply(ctx: Context, config: Config): void {
         // task_id 是模型可控输入：先过格式校验，非法形状不触碰文件系统。
         const id = String(args.task_id ?? '').trim();
         if (!isValidTaskId(id)) return `任务编号不合法 ${id || '(空)'}。任务 id 形如 20261001-a3f2，用编译指令里给的那个。`;
-        // load + 改 + save 整段进队列：排队期间任务可能已被别的命令改过，
-        // 对队列外快照落盘就是丢更新。
-        return store.queue(() => {
-          const task = store.loadTask(id);
-          if (!task) return `找不到任务 ${id}。先用 /forge 建草稿，再按编译指令里的 id 调本工具。`;
-          const now = new Date().toISOString();
-          const questions = typeof args.questions === 'string' ? args.questions.trim() : '';
-          const isInterviewRound = questions.length > 0 && !String(args.goal ?? '').trim();
-          const writtenDecisions = String(args.decisions ?? task.decisions) || task.decisions;
-          const preserved = isInterviewRound ? { decisions: writtenDecisions, restored: [] as string[] } : preservedAnswers(task.decisions, writtenDecisions);
-          const merged: TaskBook = {
-            ...task,
-            title: String(args.title ?? task.title).trim() || task.title,
-            goal: String(args.goal ?? task.goal) || task.goal,
-            context: String(args.context ?? task.context) || task.context,
-            constraints: String(args.constraints ?? task.constraints) || task.constraints,
-            acceptance: String(args.acceptance ?? task.acceptance) || task.acceptance,
-            decisions: preserved.decisions,
-            open: (isInterviewRound ? questions : String(args.open ?? task.open)) || task.open,
-            updatedAt: now,
-          };
-          const next = isInterviewRound ? withPhase(merged, 'awaiting-answers') : merged;
-          const issues = validateTask(next);
-          if (issues.length && !isInterviewRound) return `字段没过校验，未落盘：\n- ${issues.join('\n- ')}\n修好后重新调用。`;
-          // model 同时给了 goal 和 questions 走的是非 interview 分支，questions
-          // 会被 args.open 覆盖：明说被忽略，不静默丢弃。
-          const questionsIgnored = questions.length > 0 && !isInterviewRound;
-          store.saveTask(next);
-          store.appendEvent({
-            ts: now,
-            task: next.id,
-            // 编译/interview 落盘填的是当前 version 的内容，version 没走
-            // revise()，事件名不能叫 'revised'——那会和“每次 revision 必须
-            // version+1”的契约打架。
-            event: 'compiled',
-            version: next.version,
-            status: next.status,
-            title: next.title,
-            note: isInterviewRound ? 'interview 问题清单' : 'compiled',
-          });
-          const restored = preserved.restored.length ? `\n（编译时漏掉的 ${preserved.restored.length} 条用户答复已原样补回 DECISIONS）` : '';
-          if (questionsIgnored) return `任务书已按 goal 落盘，但同时传来的 questions 被忽略了——interview 第一轮不要传 goal，或只单独重发 questions。任务 ${next.id}。`;
-          return isInterviewRound
-            ? `任务 ${next.id} 的问题清单已记录（${remainingGapIds(next.open).length} 问）。把它们原样转给用户，并告诉他：用 /answer ${next.id} Q1 <答案> 逐条直答，答完最后一个 Q 会自动重新注入编译指令。`
-            : `任务书 ${next.id}@v${next.version} 已落盘。告诉用户：/relay ${next.id} [--to <窗口名>|ide:<工具名>] 导出交接包。${restored}`;
+        const task = store.loadTask(id);
+        if (!task) return `找不到任务 ${id}。先用 /forge 建草稿，再按编译指令里的 id 调本工具。`;
+        const now = new Date().toISOString();
+        const questions = typeof args.questions === 'string' ? args.questions.trim() : '';
+        const isInterviewRound = questions.length > 0 && !String(args.goal ?? '').trim();
+        const writtenDecisions = String(args.decisions ?? task.decisions) || task.decisions;
+        const preserved = isInterviewRound ? { decisions: writtenDecisions, restored: [] as string[] } : preservedAnswers(task.decisions, writtenDecisions);
+        const merged: TaskBook = {
+          ...task,
+          title: String(args.title ?? task.title).trim() || task.title,
+          goal: String(args.goal ?? task.goal) || task.goal,
+          context: String(args.context ?? task.context) || task.context,
+          constraints: String(args.constraints ?? task.constraints) || task.constraints,
+          acceptance: String(args.acceptance ?? task.acceptance) || task.acceptance,
+          decisions: preserved.decisions,
+          open: (isInterviewRound ? questions : String(args.open ?? task.open)) || task.open,
+          updatedAt: now,
+        };
+        const next = isInterviewRound ? withPhase(merged, 'awaiting-answers') : merged;
+        const issues = validateTask(next);
+        if (issues.length && !isInterviewRound) return `字段没过校验，未落盘：\n- ${issues.join('\n- ')}\n修好后重新调用。`;
+        // model 同时给了 goal 和 questions 走的是非 interview 分支，questions
+        // 会被 args.open 覆盖：明说被忽略，不静默丢弃。
+        const questionsIgnored = questions.length > 0 && !isInterviewRound;
+        store.saveTask(next);
+        store.appendEvent({
+          ts: now,
+          task: next.id,
+          // 编译落盘 version 不变，但事件名沿用上游的 'revised'（note 里写
+          // 'compiled' 区分），台账下游都按这个名字统计。
+          event: 'revised',
+          version: next.version,
+          status: next.status,
+          title: next.title,
+          note: isInterviewRound ? 'interview 问题清单' : 'compiled',
         });
+        const restored = preserved.restored.length ? `\n（编译时漏掉的 ${preserved.restored.length} 条用户答复已原样补回 DECISIONS）` : '';
+        if (questionsIgnored) return `任务书已按 goal 落盘，但同时传来的 questions 被忽略了——interview 第一轮不要传 goal，或只单独重发 questions。任务 ${next.id}。`;
+        return isInterviewRound
+          ? `任务 ${next.id} 的问题清单已记录（${remainingGapIds(next.open).length} 问）。把它们原样转给用户，并告诉他：用 /answer ${next.id} Q1 <答案> 逐条直答，答完最后一个 Q 会自动重新注入编译指令。`
+          : `任务书 ${next.id}@v${next.version} 已落盘。告诉用户：/relay ${next.id} [--to <窗口名>|ide:<工具名>] 导出交接包。${restored}`;
       },
     }),
   );

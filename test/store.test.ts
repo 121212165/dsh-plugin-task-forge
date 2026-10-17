@@ -42,7 +42,7 @@ test('taskPath 拒绝越界与非格式 id：模型可控的 task_id 到不了�
 test('saveTask/loadTask roundtrip 保住全部字段', () => {
   const store = freshStore();
   const now = new Date();
-  const task = baseTask(makeTaskId(now), { targets: ['窗口A', '窗口B'], open: 'Q1 高度单位是什么' });
+  const task = baseTask(makeTaskId(now), { targets: [{ name: '窗口A' }, { name: '窗口B' }], open: 'Q1 高度单位是什么' });
   store.saveTask(task);
   const disk = readFileSync(join(store.root, 'tasks', task.id, 'task.md'), 'utf8');
   assert.match(disk, /^---\n/);
@@ -51,14 +51,14 @@ test('saveTask/loadTask roundtrip 保住全部字段', () => {
   const loaded = store.loadTask(task.id);
   assert.ok(loaded);
   assert.equal(loaded.version, task.version);
-  assert.deepEqual(loaded.targets, ['窗口A', '窗口B']);
+  assert.deepEqual(loaded.targets, [{ name: '窗口A' }, { name: '窗口B' }]);
   assert.ok(loaded.open.includes('Q1'));
 });
 
 test('loadTask 对损坏任务书抛出带定位的错误', () => {
   const store = freshStore();
   mkdirSync(join(store.root, 'tasks', '20261001-b0g9'), { recursive: true });
-  writeFileSync(join(store.root, 'tasks', '20261001-b0g9', 'task.md'), '---\nrobot markdown\n---\n\n完全不是任务书', 'utf8');
+  writeFileSync(join(store.root, 'tasks', '20261001-b0g9', 'task.md'), '这就是一段普通文字，连 frontmatter 都没有', 'utf8');
   assert.throws(() => store.loadTask('20261001-b0g9'), /损坏|无法解析/);
   rmSync(store.root, { recursive: true, force: true });
 });
@@ -69,7 +69,7 @@ test('queue 串行化并发读改写：20 个并发 targets 增补一个不丢',
   const operations = Array.from({ length: 20 }, (_, index) =>
     store.queue(() => {
       const current = store.loadTask('20261001-a3f2')!;
-      if (!current.targets.includes(`窗口${index}`)) current.targets.push(`窗口${index}`);
+      if (!current.targets.some((entry) => entry.name === `窗口${index}`)) current.targets.push({ name: `窗口${index}` });
       store.saveTask(current);
       store.appendEvent({ ts: current.updatedAt, task: current.id, event: 'relayed', version: 1, target: `窗口${index}` });
       return index;

@@ -128,7 +128,7 @@ test('an emptied section renders as （无） and reads back as empty again', ()
 test('renderTaskMarkdown carries frontmatter, all sections, and the fixed handshake', () => {
   const md = renderTaskMarkdown({ ...base, targets: [{ name: 'web-A' }, { name: 'plugtest', ackedVersion: 2, ackedAt: '2026-10-01T09:00:00.000Z' }] });
   assert.ok(md.startsWith('---\nid: 20261001-a3f2\nversion: 1'));
-  assert.ok(md.includes('targets: [web-A, plugtest@v2@2026-10-01T09:00:00.000Z]'), md.slice(0, 400));
+  assert.ok(md.includes('targets: ["web-A","plugtest@v2@2026-10-01T09:00:00.000Z"]'), md.slice(0, 400));
   for (const heading of ['## 目标（GOAL）', '## 背景（CONTEXT）', '## 约束（CONSTRAINTS）', '## 验收标准（ACCEPTANCE）', '## 已定决策（DECISIONS）', '## 开放缺口（OPEN）', '## 握手指令（HANDSHAKE）']) {
     assert.ok(md.includes(heading), heading);
   }

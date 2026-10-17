@@ -188,11 +188,11 @@ const taskbookStub: TaskBook = {
 
 test('driftAlerts：版本漂移、任务书丢失、损坏三种都有可见警告', () => {
   const states: TaskState[] = [
-    { id: '20261001-a3f2', title: '漂移', version: 2, status: 'relayed', targets: [], lastAt: '2026-10-01T00:00:01.000Z', events: 3 },
-    { id: '20261001-b9g2', title: '丢失', version: 1, status: 'draft', targets: [], lastAt: '2026-10-01T00:00:02.000Z', events: 1 },
-    { id: '20261001-c3k6', title: '损坏', version: 1, status: 'draft', targets: [], lastAt: '2026-10-01T00:00:03.000Z', events: 1 },
-    { id: '20261001-d5m8', title: '健康', version: 2, status: 'relayed', targets: [], lastAt: '2026-10-01T00:00:04.000Z', events: 2 },
-    { id: '20261001-e6n9', title: '已完成不查', version: 5, status: 'done', targets: [], lastAt: '2026-10-01T00:00:05.000Z', events: 5 },
+    { id: '20261001-a3f2', title: '漂移', version: 2, status: 'relayed', targets: [], lastAt: '2026-10-01T00:00:01.000Z', events: 3, acksReady: 0, acksGap: 0, notes: 0 },
+    { id: '20261001-b9g2', title: '丢失', version: 1, status: 'draft', targets: [], lastAt: '2026-10-01T00:00:02.000Z', events: 1, acksReady: 0, acksGap: 0, notes: 0 },
+    { id: '20261001-c3k6', title: '损坏', version: 1, status: 'draft', targets: [], lastAt: '2026-10-01T00:00:03.000Z', events: 1, acksReady: 0, acksGap: 0, notes: 0 },
+    { id: '20261001-d5m8', title: '健康', version: 2, status: 'relayed', targets: [], lastAt: '2026-10-01T00:00:04.000Z', events: 2, acksReady: 1, acksGap: 0, notes: 0 },
+    { id: '20261001-e6n9', title: '已完成不查', version: 5, status: 'done', targets: [], lastAt: '2026-10-01T00:00:05.000Z', events: 5, acksReady: 2, acksGap: 1, notes: 0 },
   ];
   const loader = (id: string) => {
     if (id === '20261001-a3f2') return { ...taskbookStub, version: 3 };
@@ -209,7 +209,7 @@ test('driftAlerts：版本漂移、任务书丢失、损坏三种都有可见警
 
 test('driftAlerts：一致时不产生任何警告', () => {
   const states: TaskState[] = [
-    { id: '20261001-a3f2', title: '健康', version: 2, status: 'relayed', targets: [], lastAt: '2026-10-01T00:00:01.000Z', events: 2 },
+    { id: '20261001-a3f2', title: '健康', version: 2, status: 'relayed', targets: [], lastAt: '2026-10-01T00:00:01.000Z', events: 2, acksReady: 0, acksGap: 0, notes: 0 },
   ];
   const alerts = driftAlerts(states, () => ({ ...taskbookStub, version: 2 }));
   assert.deepEqual(alerts, []);
