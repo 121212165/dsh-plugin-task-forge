@@ -267,3 +267,29 @@ test('withNote starts the CONTEXT when it was empty, and collapses messy whitesp
   assert.equal(round.issues.length, 0);
   assert.equal(round.task!.context, fromEmpty.context);
 });
+
+test('正文里的 ## 小标题不再截断段落：roundtrip 一字不差', () => {
+  const task = {
+    ...base,
+    goal: ['第一段。', '### 用户粘进来的小标题', '第二段内容。', '## 又一个小标题'].join('\n'),
+    decisions: 'D1 选了方案 A：理由如下\n## 居然还有\n继续写',
+  };
+  const parsed = parseTaskMarkdown(renderTaskMarkdown(task));
+  assert.deepEqual(parsed.issues, []);
+  assert.ok(parsed.task);
+  assert.equal(parsed.task.goal, task.goal);
+  assert.equal(parsed.task.decisions, task.decisions);
+});
+
+test('targets 里有逗号时也能 roundtrip（JSON 数组格式）', () => {
+  const task = { ...base, targets: [{ name: '窗口A' }, { name: 'Claude, 备用窗口' }] };
+  const parsed = parseTaskMarkdown(renderTaskMarkdown(task));
+  assert.deepEqual(parsed.issues, []);
+  assert.deepEqual(parsed.task?.targets, [{ name: '窗口A' }, { name: 'Claude, 备用窗口' }]);
+});
+
+test('旧格式（裸逗号 targets）仍然可读：兼容期不炸历史文件', () => {
+  const legacy = '---\nid: 20261001-a3f2\nversion: 1\nstatus: draft\ntitle: t\nmode: auto\ncreated: 2026-10-01T00:00:00.000Z\nupdated: 2026-10-01T00:00:00.000Z\ntargets: [窗口A, 窗口B]\n---\n\n# 任务书\n\n## 目标（GOAL）\n做点事\n\n## 验收标准（ACCEPTANCE）\nA1 通过';
+  const parsed = parseTaskMarkdown(legacy);
+  assert.deepEqual(parsed.task?.targets, [{ name: '窗口A' }, { name: '窗口B' }]);
+});

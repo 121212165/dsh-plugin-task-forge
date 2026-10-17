@@ -14,8 +14,8 @@ export interface Handshake {
   issues: string[];
 }
 
-const STATUS_RE = /STATUS\s*[:：]\s*(READY|NEED[-_ ]?INPUT)/i;
-const VERSION_RE = /(?:version|版本)\s*[:：]?\s*v?(\d+)/i;
+const STATUS_RE = /STATUS\s*[:：]\s*(READY|NEED[-_ ]?INPUT)/gi;
+const VERSION_RE = /(?:version|版本)\s*[:：]?\s*v?(\d+)/gi;
 const MARKERS = { restatement: '【回读】', gaps: '【缺口】' } as const;
 
 /** 1. / 1、 / 1) / - 1. … numbered gap lines; bare "无" lines mean no gaps. */
@@ -40,15 +40,25 @@ function sectionAfter(text: string, marker: string): string {
   return (next === -1 ? rest : rest.slice(0, next)).trim();
 }
 
+/** 对方正文（复述/引用）里可能出现 STATUS 或 version 字样，协议结论永远在
+ * 文本末尾——一律取最后一次匹配，避免把早前的引用文字当成结论。 */
+function lastMatch(re: RegExp, text: string): RegExpExecArray | null {
+  re.lastIndex = 0;
+  let last: RegExpExecArray | null = null;
+  for (let match = re.exec(text); match !== null; match = re.exec(text)) last = match;
+  re.lastIndex = 0;
+  return last;
+}
+
 export function parseHandshake(input: string): Handshake {
   const text = String(input ?? '');
   const issues: string[] = [];
 
-  const statusMatch = STATUS_RE.exec(text);
+  const statusMatch = lastMatch(STATUS_RE, text);
   const status = (statusMatch ? (statusMatch[1]!.toUpperCase().startsWith('READY') ? 'ready' : 'need-input') : null) as HandshakeStatus | null;
   if (!statusMatch) issues.push('缺少 STATUS 行（READY / NEED-INPUT）——没有明确放行，不能当握手通过');
 
-  const versionMatch = VERSION_RE.exec(text);
+  const versionMatch = lastMatch(VERSION_RE, text);
   const version = versionMatch ? Number.parseInt(versionMatch[1]!, 10) : null;
   if (version === null) issues.push('缺少 version 确认（接收方必须注明它读到的是哪一版）');
 
@@ -103,12 +113,20 @@ export function renderAckReply(
   const stale = isStaleVersion(hs, task.version)
     ? [`⚠ 对方确认的是 v${hs.version}，最新版是 v${task.version}——回读按旧版处理，需要把最新版重新 relay 并让对方重新回读。`]
     : [];
-  if (hs.status === 'ready' && !needsSenderInput(hs)) {
-    return [
-      `✓ ${target} 回读通过（${task.id}@v${task.version}，STATUS: READY），可以放心让它开工。`,
-      ...stale,
-      '后续所有交接引用该任务时都带上版本号：' + `${task.id}@v${task.version}。`,
-    ].join('\n');
+  if (hs.status === 'ready') {
+    if (stale.length) {
+      // 旧版 READY 不是放行：不能与“可以放心开始”同时出现，只给重新 relay 指引。
+      return [
+        `⚠ ${target} 回读通过但基于旧版（${task.id}@v${task.version}，对方确认的是 v${hs.version}）——回读按旧版处理，先重新 relay，等它按 v${task.version} 回读后再开工。`,
+        '后续所有交接引用该任务时都带上版本号：' + `${task.id}@v${task.version}。`,
+      ].join('\n');
+    }
+    if (!needsSenderInput(hs)) {
+      return [
+        `✓ ${target} 回读通过（${task.id}@v${task.version}，STATUS: READY），可以放心让它开工。`,
+        '后续所有交接引用该任务时都带上版本号：' + `${task.id}@v${task.version}。`,
+      ].join('\n');
+    }
   }
   const header = hs.status === 'ready'
     ? `△ ${target} 标了 READY 却列了 ${hs.gaps.length} 条缺口（${task.id}@v${task.version}）——缺口是它自己替你默认的，按 NEED-INPUT 处理：`

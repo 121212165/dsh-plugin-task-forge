@@ -253,11 +253,22 @@ export function renderTaskMarkdown(task: TaskBook): string {
     ...(task.phase ? [`phase: ${task.phase}`] : []),
     `created: ${task.createdAt}`,
     `updated: ${task.updatedAt}`,
-    `targets: [${task.targets.map(formatTarget).join(', ')}]`,
+    `targets: ${JSON.stringify(task.targets.map(formatTarget))}`,
     '---',
   ].join('\n');
-  const body = SECTIONS.map(({ key, heading }) => `${heading}\n${(task[key] as string).trim() || EMPTY_SECTION}`);
+  const body = SECTIONS.map(({ key, heading }) => `${heading}\n${escapeSection((task[key] as string).trim()) || EMPTY_SECTION}`);
   return [frontmatter, '', `# 任务书 ${task.id} · ${task.title}（v${task.version}）`, '', ...body, '', '## 握手指令（HANDSHAKE）', '', HANDSHAKE_TEXT, ''].join('\n');
+}
+
+/** 正文里用户常见的 `## 小标题` 行会在 parse 时被当成真标题、截断上一段
+ * 内容；转义为 `##<零宽空格>` 让它按字面存活，read 侧再还原。字段内容
+ * 被转义后视觉上几乎无差，但不再可能丢数据。 */
+export function escapeSection(text: string): string {
+  return text.replace(/^(#{1,6})(?=\s|$)/gm, '$1\u200b');
+}
+
+export function unescapeSection(text: string): string {
+  return text.replace(/^(#{1,6})\u200b/gm, '$1');
 }
 
 /** Roundtrip parser — a relayed file pasted back (or edited by hand) must come
@@ -293,7 +304,8 @@ export function parseTaskMarkdown(content: string): { task: TaskBook | null; iss
   flush();
   const pick = (heading: string): string => {
     const hit = [...sections.keys()].find((key) => key.startsWith(heading));
-    const value = hit ? sections.get(hit)! : '';
+    // 转义还原在前，EMPTY_SECTION 归零在后：两者都是 roundtrip 不失真的前提。
+    const value = unescapeSection(hit ? sections.get(hit)! : '');
     return value.trim() === EMPTY_SECTION ? '' : value;
   };
 
@@ -332,17 +344,30 @@ function formatTarget(target: TaskTarget): string {
 const ACKED_TARGET_RE = /^(.+)@v(\d+)@(\S+)$/;
 
 export function parseTargets(raw: string): TaskTarget[] {
+  // render 现在写 JSON 数组（formatTarget 编码单条）；旧文件仍是裸逗号分隔
+  // 字符串（v0.1 的纯名字，v0.2+ 的 name@v2@ts 条目）——先试新模式，失败退回旧行为。
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed) && parsed.every((entry) => typeof entry === 'string')) {
+      return (parsed as string[]).map(parseTargetEntry).filter((target): target is TaskTarget => target !== null);
+    }
+  } catch {
+    // fall through to legacy comma split
+  }
   const inner = raw.replace(/^\[/, '').replace(/\]$/, '').trim();
   if (!inner) return [];
   return inner
     .split(',')
     .map((entry) => entry.trim())
     .filter(Boolean)
-    .map((entry) => {
-      const acked = ACKED_TARGET_RE.exec(entry);
-      const at = acked ? Date.parse(acked[3]!) : Number.NaN;
-      return acked && Number.isFinite(at) ? { name: acked[1]!, ackedVersion: Number.parseInt(acked[2]!, 10), ackedAt: new Date(at).toISOString() } : { name: entry };
-    });
+    .map(parseTargetEntry)
+    .filter((target): target is TaskTarget => target !== null);
+}
+
+function parseTargetEntry(entry: string): TaskTarget | null {
+  const acked = ACKED_TARGET_RE.exec(entry);
+  const at = acked ? Date.parse(acked[3]!) : Number.NaN;
+  return acked && Number.isFinite(at) ? { name: acked[1]!, ackedVersion: Number.parseInt(acked[2]!, 10), ackedAt: new Date(at).toISOString() } : { name: entry.trim() };
 }
 
 /** The prompt injected into the compiler turn. auto asks the model to decide

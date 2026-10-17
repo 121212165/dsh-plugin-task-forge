@@ -3,9 +3,12 @@
  * version of which task" — the system-prompt section reads it live, so a
  * relay or ack lands in every future session without restarts. */
 
-import { STATUS_LABEL, targetSummary, type TaskStatus, type TaskTarget } from './taskbook.ts';
+import { STATUS_LABEL, targetSummary, type TaskBook, type TaskStatus, type TaskTarget } from './taskbook.ts';
 
-export type LedgerEventKind = 'created' | 'revised' | 'relayed' | 'acked' | 'gap-resolved' | 'noted' | 'done';
+// 'compiled' 是新代码编译落盘用的（version 不走 revise）；'revised' 是历史遗留
+//（旧版编译也记它）——都保留在白名单里，旧台账继续可读，新代码的名字不再
+// 和“每次 revise 必须 version+1”的契约打架。
+export type LedgerEventKind = 'created' | 'compiled' | 'revised' | 'relayed' | 'acked' | 'gap-resolved' | 'noted' | 'done';
 
 export interface LedgerEvent {
   ts: string;
@@ -38,7 +41,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-const KINDS: readonly string[] = ['created', 'revised', 'relayed', 'acked', 'gap-resolved', 'noted', 'done'];
+const KINDS: readonly string[] = ['created', 'compiled', 'revised', 'relayed', 'acked', 'gap-resolved', 'noted', 'done'];
 
 export function parseLine(line: string): LedgerEvent | null {
   const text = line.trim();
@@ -96,7 +99,9 @@ export function foldStates(events: LedgerEvent[]): TaskState[] {
     };
     current.events += 1;
     current.lastAt = event.ts;
-    if (typeof event.version === 'number') current.version = event.version;
+    // 版本单调不回退：多进程对同一台账追加时，旧事件晚到不应把版本拽回去
+    // （status/title 仍以后写者为准）。
+    if (typeof event.version === 'number' && event.version > current.version) current.version = event.version;
     if (event.status) current.status = event.status;
     if (event.title) current.title = event.title;
     if (event.note) current.lastNote = event.note;
@@ -229,4 +234,34 @@ export function renderSection(states: TaskState[], budget: SectionBudget): strin
     '这些任务正通过任务书+回读握手跨窗口交接。引用任务必须带完整版本号（id@version）；收到任务书的 AI 先按握手指令回读，再开工。',
     ...lines,
   ].join('\n');
+}
+
+/** 台账和 task.md 是两本账：命令侧 bug 或手工编辑都可能让版本漂移。把漂移
+ * 变成注入区段里的可见警告，而不是静默矛盾。loader 按 id 读盘（不存在返回
+ * null，损坏抛异常——两者都算漂移）。最多报 max 条，避免警告淹没正文。 */
+export function driftAlerts(
+  states: TaskState[],
+  loader: (id: string) => TaskBook | null,
+  max = 3,
+): string[] {
+  const alerts: string[] = [];
+  for (const state of states) {
+    if (alerts.length >= max) break;
+    if (state.status === 'done') continue;
+    let disk: TaskBook | null = null;
+    try {
+      disk = loader(state.id);
+    } catch {
+      alerts.push(`⚠ ${state.id} 任务书损坏，台账显示 v${state.version}——先修 tasks/${state.id}/task.md`);
+      continue;
+    }
+    if (!disk) {
+      alerts.push(`⚠ ${state.id} 台账有活动记录但任务书文件不存在`);
+      continue;
+    }
+    if (disk.version !== state.version) {
+      alerts.push(`⚠ ${state.id} 台账记 v${state.version} 但任务书是 v${disk.version}——以任务书为准，排查中间缺的事件`);
+    }
+  }
+  return alerts;
 }

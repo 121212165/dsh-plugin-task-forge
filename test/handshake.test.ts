@@ -149,3 +149,30 @@ test('renderAckReply: NEED-INPUT without listed gaps asks the sender to follow u
   assert.ok(reply.startsWith('△'));
   assert.ok(reply.includes('没列出具体缺口'));
 });
+
+test('parseHandshake 认文本末尾的结论，不把正文里引用过的 STATUS 当判据', () => {
+  const hs = parseHandshake([
+    'version: 2',
+    '【回读】我理解了规则：末行 STATUS: READY 才算通过。',
+    '【缺口】无',
+    'STATUS: NEED-INPUT',
+  ].join('\n'));
+  assert.equal(hs.status, 'need-input');
+});
+
+test('整包回贴时正文里早前的 version 不会冒充结论', () => {
+  const hs = parseHandshake([
+    '---',
+    'id: 20261001-a3f2',
+    'version: 1',
+    '---',
+    '## 目标（GOAL）',
+    '做点事（规则里的 version: 999 是正文引用）',
+    '【回读】复述',
+    '【缺口】无',
+    'STATUS: READY',
+    'version: 2',
+  ].join('\n'));
+  assert.equal(hs.version, 2);
+  assert.equal(hs.status, 'ready');
+});

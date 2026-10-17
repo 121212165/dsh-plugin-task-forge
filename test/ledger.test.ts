@@ -154,3 +154,63 @@ test('noted events fold into a per-task tally and show up in forge-list', () => 
   const list = renderForgeList(foldStates(events));
   assert.ok(list.includes('备注 2'), list);
 });
+
+test('stale ack 事件不会把台账版本拽回旧版：fold 单调不回退', () => {
+  const events: LedgerEvent[] = [
+    { ts: '2026-10-01T00:00:01.000Z', task: '20261001-a3f2', event: 'created', version: 1, title: '编译任务' },
+    { ts: '2026-10-01T00:00:02.000Z', task: '20261001-a3f2', event: 'gap-resolved', version: 2, status: 'relayed' },
+    { ts: '2026-10-01T00:00:03.000Z', task: '20261001-a3f2', event: 'acked', version: 1, status: 'relayed' },
+  ];
+  const state = foldStates(events).find((entry) => entry.id === '20261001-a3f2')!;
+  assert.equal(state.version, 2);
+});
+
+import { driftAlerts, type TaskState } from '../src/ledger.ts';
+import type { TaskBook } from '../src/taskbook.ts';
+
+const taskbookStub: TaskBook = {
+  v: 1,
+  id: '20261001-a3f2',
+  version: 1,
+  status: 'draft',
+  title: 't',
+  mode: 'auto',
+  createdAt: '2026-10-01T00:00:00.000Z',
+  updatedAt: '2026-10-01T00:00:00.000Z',
+  targets: [],
+  goal: 'g',
+  context: '',
+  constraints: '',
+  acceptance: 'A1',
+  decisions: '',
+  open: '',
+};
+
+test('driftAlerts：版本漂移、任务书丢失、损坏三种都有可见警告', () => {
+  const states: TaskState[] = [
+    { id: '20261001-a3f2', title: '漂移', version: 2, status: 'relayed', targets: [], lastAt: '2026-10-01T00:00:01.000Z', events: 3 },
+    { id: '20261001-b9g2', title: '丢失', version: 1, status: 'draft', targets: [], lastAt: '2026-10-01T00:00:02.000Z', events: 1 },
+    { id: '20261001-c3k6', title: '损坏', version: 1, status: 'draft', targets: [], lastAt: '2026-10-01T00:00:03.000Z', events: 1 },
+    { id: '20261001-d5m8', title: '健康', version: 2, status: 'relayed', targets: [], lastAt: '2026-10-01T00:00:04.000Z', events: 2 },
+    { id: '20261001-e6n9', title: '已完成不查', version: 5, status: 'done', targets: [], lastAt: '2026-10-01T00:00:05.000Z', events: 5 },
+  ];
+  const loader = (id: string) => {
+    if (id === '20261001-a3f2') return { ...taskbookStub, version: 3 };
+    if (id === '20261001-b9g2') return null;
+    if (id === '20261001-c3k6') throw new Error('损坏');
+    return { ...taskbookStub, version: 2 };
+  };
+  const alerts = driftAlerts(states, loader);
+  assert.equal(alerts.length, 3);
+  assert.ok(alerts[0]!.includes('20261001-a3f2') && alerts[0]!.includes('v2') && alerts[0]!.includes('v3'));
+  assert.ok(alerts[1]!.includes('不存在'));
+  assert.ok(alerts[2]!.includes('损坏'));
+});
+
+test('driftAlerts：一致时不产生任何警告', () => {
+  const states: TaskState[] = [
+    { id: '20261001-a3f2', title: '健康', version: 2, status: 'relayed', targets: [], lastAt: '2026-10-01T00:00:01.000Z', events: 2 },
+  ];
+  const alerts = driftAlerts(states, () => ({ ...taskbookStub, version: 2 }));
+  assert.deepEqual(alerts, []);
+});
