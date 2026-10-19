@@ -694,8 +694,7 @@ test('/forge-note appends a dated context line, keeps the version, and logs a no
   assert.ok(list.includes('备注 1'), list);
 
   // roundtrip: the relayed copy parses back clean with the note inside
-  const relayed = fireOk(harness, 'relay', id);
-  const store = await storeOf(harness);
+  fireOk(harness, 'relay', id);
   const parsed = parseTaskMarkdown(readFileSync(join(harness.dataPath, 'outbox', `${id}-v1.md`), 'utf8'));
   assert.equal(parsed.issues.length, 0);
   assert.ok(parsed.task!.context.includes('配色以 Figma 为准'));

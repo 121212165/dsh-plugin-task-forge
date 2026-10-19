@@ -14,7 +14,7 @@ export interface CapturedCommand {
   name: string;
   description: string;
   input?: { hint?: string };
-  handler: (args: { rawInput?: string }) => { kind: string; text: string };
+  handler: (args: { rawInput?: string | undefined }) => { kind: string; text: string };
 }
 
 export interface CapturedTool {

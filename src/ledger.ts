@@ -17,8 +17,8 @@ export interface LedgerEvent {
   version?: number;
   status?: string;
   title?: string;
-  target?: string;
-  note?: string;
+  target?: string | undefined;
+  note?: string | undefined;
 }
 
 export interface TaskState {

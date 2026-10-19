@@ -523,8 +523,6 @@ export function apply(ctx: Context, config: Config): void {
       const { events, skipped } = store.loadStates();
       const states = foldStates(events);
       const details = new Map<string, TaskDetail>();
-      const summary = quotaSummary();
-      const price = costPrice(summary);
       const steps = quotaHistory();
       for (const state of states) {
         try {

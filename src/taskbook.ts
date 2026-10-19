@@ -46,8 +46,6 @@ export const STATUS_LABEL: Record<TaskStatus, string> = {
   done: '已完成',
 };
 
-const ID_SUFFIX_RE = /^[a-z0-9]{4,8}$/;
-
 /** `20261001-a3f2` — date part from the clock, random suffix from the caller. */
 export function makeTaskId(now: Date, random: () => number = Math.random): string {
   const y = now.getFullYear();
