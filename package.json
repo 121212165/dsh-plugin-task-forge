@@ -27,6 +27,15 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "catalog": {
+      "category": "编排与界面",
+      "blurb": "大白话 → 任务书 → 跨窗口无损交接（回读握手）",
+      "entries": "`/forge`",
+      "featured": true,
+      "featuredOrder": 2,
+      "featuredBlurb": "把大白话编译成任务书，跨窗口 AI 无损交接：回读握手逼出理解损耗，缺口闭环、版本号跨窗口唯一权威",
+      "featuredEntries": "`/forge` `/relay` `/ack` `/answer` `/forge-list`"
     }
   },
   "engines": {
