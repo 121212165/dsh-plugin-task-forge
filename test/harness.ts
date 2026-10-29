@@ -1,14 +1,13 @@
 /** Shared assembly-layer harness: a scripted mock dsh context that the real
  * `apply()` wires against, so command handlers, the tool, and the prompt
- * section are exercised over a real temp directory — the wire coverage the
- * family audit found missing everywhere. Pattern adopted from dsh-auto-review's
- * mountHarness (222★), rebuilt on node:test instead of vitest.
+ * section are exercised over a real temp directory. The mock itself lives in
+ * @dsh-family/kit; this file adds task-forge's captures, config defaults and
+ * the command helpers every test in this repo uses.
  * @module test/harness */
 
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { after } from 'node:test';
+
+import { applyOnce, createMockCtx, tempDir } from '@dsh-family/kit/kit/test-harness';
 
 export interface CapturedCommand {
   name: string;
@@ -57,9 +56,6 @@ export interface HarnessOptions {
 }
 
 export function makeHarness(options: HarnessOptions = {}): Harness {
-  const commands: CapturedCommand[] = [];
-  const tools: CapturedTool[] = [];
-  const sections: CapturedSection[] = [];
   const followups: CapturedFollowup[] = [];
 
   const agent = {
@@ -69,72 +65,50 @@ export function makeHarness(options: HarnessOptions = {}): Harness {
     },
   };
 
-  const ctx = {
-    logger(_name: string) {
-      return { info() {}, warn() {} };
-    },
-    commands: {
-      register(definition: CapturedCommand) {
-        commands.push(definition);
-      },
-    },
-    tools: {
-      register(definition: CapturedTool) {
-        tools.push(definition);
-      },
-    },
-    systemPrompt: {
-      section(section: CapturedSection) {
-        sections.push(section);
-      },
-    },
+  const mock = createMockCtx<CapturedCommand, CapturedTool, CapturedSection>({
     agents: options.agent === false ? { get: () => undefined, list: () => [] } : { get: () => undefined, list: () => [agent] },
-  };
+  });
 
-  const dataPath = mkdtempSync(join(tmpdir(), 'task-forge-wire-'));
-  after(() => rmSync(dataPath, { recursive: true, force: true }));
+  const dataPath = tempDir('task-forge-wire-');
 
   // apply once per harness — a second call would double-register commands.
-  let applied: Promise<void> | null = null;
+  // The first call decides the mount config; later calls reuse it.
+  let pending: Record<string, unknown> = {};
+  let mounted = false;
+  const applied = applyOnce(() =>
+    import('../src/plugin.ts').then(({ apply }) => apply(mock.ctx as never, {
+      enabled: true,
+      hubPath: join(dataPath, 'hub'),
+      // never let a test read the real ~/.dsh/quota/summary.json
+      quotaSummaryPath: join(dataPath, 'no-quota.json'),
+      // ...or the real ~/.dsh/quota/history.json
+      quotaHistoryPath: join(dataPath, 'no-history.json'),
+      limit: 8,
+      maxChars: 900,
+      order: 690,
+      ...pending,
+    } as never)),
+  );
 
-  const harness: Harness = {
-    commands,
-    tools,
-    sections,
+  return {
+    commands: mock.commands,
+    tools: mock.tools,
+    sections: mock.sections,
     followups,
     dataPath,
     apply(config: Record<string, unknown>) {
-      applied ??= import('../src/plugin.ts').then(({ apply }) => apply(ctx as never, {
-        enabled: true,
-        hubPath: join(dataPath, 'hub'),
-        // never let a test read the real ~/.dsh/quota/summary.json
-        quotaSummaryPath: join(dataPath, 'no-quota.json'),
-        // ...or the real ~/.dsh/quota/history.json
-        quotaHistoryPath: join(dataPath, 'no-history.json'),
-        limit: 8,
-        maxChars: 900,
-        order: 690,
-        ...config,
-      } as never));
-      return applied;
+      if (!mounted) {
+        mounted = true;
+        pending = config;
+      }
+      return applied();
     },
-    command(name: string): CapturedCommand {
-      const found = commands.find((candidate) => candidate.name === name);
-      if (!found) throw new Error(`command ${name} was never registered`);
-      return found;
-    },
-    tool(name: string): CapturedTool {
-      const found = tools.find((candidate) => candidate.name === name);
-      if (!found) throw new Error(`tool ${name} was never registered`);
-      return found;
-    },
+    command: mock.command,
+    tool: mock.tool,
     sectionText(): string {
-      const found = sections.find((candidate) => candidate.name === 'task-forge');
-      if (!found) throw new Error('task-forge section was never registered');
-      return found.text();
+      return mock.section('task-forge').text();
     },
   };
-  return harness;
 }
 
 /** Convenience: fire a command and assert+return its success text. */
