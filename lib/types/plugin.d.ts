@@ -24,25 +24,25 @@ export interface Config {
     maxChars: number;
     order: number;
 }
-export declare const Config: Schema<Schemastery.ObjectS<{
-    enabled: Schema<boolean, boolean>;
-    dataPath: Schema<string, string>;
-    hubPath: Schema<string, string>;
-    quotaSummaryPath: Schema<string, string>;
-    quotaHistoryPath: Schema<string, string>;
-    limit: Schema<number, number>;
-    maxChars: Schema<number, number>;
-    order: Schema<number, number>;
-}>, Schemastery.ObjectT<{
-    enabled: Schema<boolean, boolean>;
-    dataPath: Schema<string, string>;
-    hubPath: Schema<string, string>;
-    quotaSummaryPath: Schema<string, string>;
-    quotaHistoryPath: Schema<string, string>;
-    limit: Schema<number, number>;
-    maxChars: Schema<number, number>;
-    order: Schema<number, number>;
-}>>;
+export declare const Config: Schema<Schemastery.ObjectS<NoInfer<{
+    enabled: Schema<boolean, boolean, "defined">;
+    dataPath: Schema<string, string, "plain">;
+    hubPath: Schema<string, string, "defined">;
+    quotaSummaryPath: Schema<string, string, "defined">;
+    quotaHistoryPath: Schema<string, string, "defined">;
+    limit: Schema<number, number, "defined">;
+    maxChars: Schema<number, number, "defined">;
+    order: Schema<number, number, "defined">;
+}>>, Schemastery.ObjectT<NoInfer<{
+    enabled: Schema<boolean, boolean, "defined">;
+    dataPath: Schema<string, string, "plain">;
+    hubPath: Schema<string, string, "defined">;
+    quotaSummaryPath: Schema<string, string, "defined">;
+    quotaHistoryPath: Schema<string, string, "defined">;
+    limit: Schema<number, number, "defined">;
+    maxChars: Schema<number, number, "defined">;
+    order: Schema<number, number, "defined">;
+}>>, "plain">;
 export declare function expandHome(path: string): string;
 export declare function writeAtomic(dest: string, content: string): void;
 export declare class ForgeStore {
